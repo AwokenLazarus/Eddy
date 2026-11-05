@@ -1,0 +1,9 @@
+[package]
+name = "eddy-headers"
+description = "Syncs and validates every Bitcoin (XBT) block header from genesis, from P2P peers."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bitcoin = { version = "=0.32.8", features = ["std"] }
+floresta-chain = { git = "https://github.com/AwokenLazarus/Floresta", rev = "30049a3c8171275f4f069218b9734cccc564ed07", features = ["flat-chainstore"] }

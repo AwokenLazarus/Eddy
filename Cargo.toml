@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/eddy-headers"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+
+# Our fork of rust-bitcoin adds the 164-byte BLAKE2b block header.
+[patch.crates-io]
+bitcoin = { git = "https://github.com/AwokenLazarus/rust-bitcoin", rev = "eef5a89ee0a64ab6eaf3f33b3140fd9ce673231a" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
