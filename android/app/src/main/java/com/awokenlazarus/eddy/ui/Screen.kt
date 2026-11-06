@@ -158,6 +158,12 @@ private fun ProgressCard(s: NodeState) {
             s.etaSeconds?.let { if (s.ibd) add("about ${duration(it)} left") }
         }.joinToString(" · ")
         if (line.isNotEmpty()) Text(line, style = small)
+        if (s.swiftActive && s.swiftTerminal > 0) {
+            Text(
+                "SwiftSync: every block and signature is checked now; the coins it was given are proven at block %,d.".format(s.swiftTerminal),
+                style = small.copy(color = C.arc),
+            )
+        }
         if (s.detail.isNotEmpty() && s.phase != Phase.Syncing && s.phase != Phase.Synced) {
             Text(s.detail, style = body.copy(color = if (s.phase == Phase.Error) C.bad else C.warn))
         }
@@ -240,7 +246,7 @@ private fun SettingsCard(s: Settings, change: (Settings) -> Unit) {
         Text("RULES", style = label)
         Toggle("Wi-Fi only for the first sync", "No mobile data until the chain is synced; after that, either.", true, enabled = false) {}
         Toggle("Only while charging", "Pause when the phone is unplugged.", s.chargingOnly) { change(s.copy(chargingOnly = it)) }
-        Toggle("Pause when hot", "Stop downloading until the phone cools down.", s.pauseHot) { change(s.copy(pauseHot = it)) }
+        Toggle("Pause when hot", "Pause if Android reports severe heat or the battery reaches 42 °C.", s.pauseHot) { change(s.copy(pauseHot = it)) }
         Toggle("Pause while I use the phone", "Sync only with the screen off.", s.pauseInUse) { change(s.copy(pauseInUse = it)) }
         Toggle("Detailed timing logs", "Per-block timings for diagnostics (takes effect at the next start).", s.benchLogs) { change(s.copy(benchLogs = it)) }
     }

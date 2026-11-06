@@ -8,7 +8,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.1.1) runs the node; Lightning Fork isn't in the app yet. Nothing
+Early. The Android app (`android/`, version 0.2.0) runs the node; Lightning Fork isn't in the app yet. Nothing
 here holds real funds yet.
 
 Works on an Android 14 x86_64 emulator:
@@ -37,13 +37,20 @@ from the genesis block with `assumevalid=0`. It aims to leave the phone usable w
   and it checks signatures on every core.
 - **Bounded memory.** The UTXO cache is a sixth of the phone's RAM, at most 2 GB, during the first sync and
   300 MB after it. The node is pruned to 4 GB of blocks.
-- **Pauses.** It pauses when the phone gets hot (Android's thermal status and headroom) or the battery drops
+- **Pauses.** It pauses when Android reports severe heat or the battery reaches 42 °C, or the battery drops
   below 15% off the charger. Optional settings pause it while unplugged or while the screen is on.
 - **Diagnostics.** Every minute it records the node's progress, CPU, memory and I/O, the phone's heat,
   battery, memory, network and main-thread lag, where the node's block-connecting time goes (from
   `-debug=bench`), and every pause, restart and crash. The records sit in
   `Android/data/com.awokenlazarus.eddy/files/diag` (readable over `adb`) with the node's own log, rotated
   and gzipped, and can be shared as one zip from the app.
+
+- **SwiftSync.** Eddy 0.2 runs a fork of Knots that adds SwiftSync
+  ([AwokenLazarus/knots](https://github.com/AwokenLazarus/knots), branch `eddy/swiftsync`). With a hints file
+  in its files folder, the first sync skips the UTXO database for coins spent before the hints' end height,
+  which is most of them. It still checks every block and signature, using the spent coins a peer serves, and
+  a running total proves at the end height that those coins were real. A bad hints file or bad served data
+  stops the sync with an error; it can't make the node accept an invalid chain.
 
 Build it with `scripts/build-android-app.sh` after building Knots for `aarch64` (and `x86_64` for the
 emulator). The fonts are Inter and JetBrains Mono (SIL Open Font License), converted from woff2 at build

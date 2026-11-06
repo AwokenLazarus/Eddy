@@ -33,7 +33,7 @@ object NodeConfig {
         return Plan(dbcache, par, synced, totalMb, cores)
     }
 
-    fun write(ctx: Context, dataDir: File, plan: Plan, benchLogs: Boolean, logFile: File): File {
+    fun write(ctx: Context, dataDir: File, plan: Plan, benchLogs: Boolean, logFile: File, swiftsyncHints: File?): File {
         val peers = runCatching {
             ctx.assets.open("peers.txt").bufferedReader().readLines()
         }.getOrDefault(emptyList()).map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -69,6 +69,9 @@ object NodeConfig {
             add("printtoconsole=0")
             add("debuglogfile=${logFile.path}")
             if (benchLogs) add("debug=bench")
+            // SwiftSync: skip the UTXO database for coins spent before the hints' end height; every
+            // block and signature is still checked, and the served coins are proven at that height.
+            if (swiftsyncHints != null) add("swiftsync=${swiftsyncHints.path}")
             peers.forEach { add("addnode=$it") }
         }
         val f = File(dataDir, "bitcoin.conf")

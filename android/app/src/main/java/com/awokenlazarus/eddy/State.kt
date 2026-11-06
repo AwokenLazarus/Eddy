@@ -32,6 +32,9 @@ data class NodeState(
     val restarts: Int = 0,
     val activeSyncSec: Long = 0,
     val lagP95Ms: Long = 0,
+    /** SwiftSync: the height where the coins it was given are proven, or 0 when not in use. */
+    val swiftTerminal: Int = 0,
+    val swiftActive: Boolean = false,
 )
 
 fun pauseText(reason: String?): String = when (reason) {
@@ -49,7 +52,11 @@ class Prefs(ctx: Context) {
     private val p = ctx.getSharedPreferences("eddy", Context.MODE_PRIVATE)
     var wantRunning: Boolean
         get() = p.getBoolean("want_running", false)
-        set(v) = p.edit().putBoolean("want_running", v).apply()
+        set(v) = p.edit().putBoolean("want_running", v).commit().let { }
+    /** The current data directory was started from genesis for a SwiftSync. */
+    var swiftsyncStarted: Boolean
+        get() = p.getBoolean("swiftsync_started", false)
+        set(v) = p.edit().putBoolean("swiftsync_started", v).commit().let { }
     var chargingOnly: Boolean
         get() = p.getBoolean("charging_only", false)
         set(v) = p.edit().putBoolean("charging_only", v).apply()
@@ -68,6 +75,18 @@ class Prefs(ctx: Context) {
 }
 
 class EddyApp : Application() {
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // Android's own word on memory pressure: what decides how big the node's cache can be.
+        runCatching { Diagnostics(this).event("trim_memory", "level" to level) }
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onLowMemory() {
+        super.onLowMemory()
+        runCatching { Diagnostics(this).event("low_memory") }
+    }
+
     override fun onCreate() {
         super.onCreate()
         val previous = Thread.getDefaultUncaughtExceptionHandler()

@@ -131,6 +131,12 @@ class NodeService : Service() {
     private val powerReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             diag.event("power", "action" to i.action?.substringAfterLast('.'))
+            if (i.action == Intent.ACTION_SHUTDOWN) {
+                // The phone is turning off: ask the node to write its cache now. Android gives only
+                // seconds, so a big cache may not finish, but every flushed block is kept.
+                proc?.let { if (it.isAlive) runCatching { scope.launch { runCatching { rpc.call("stop") } } } }
+                return
+            }
             kicks.trySend(Unit)
         }
     }
@@ -159,6 +165,7 @@ class NodeService : Service() {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_BATTERY_LOW)
             addAction(Intent.ACTION_BATTERY_OKAY)
+            addAction(Intent.ACTION_SHUTDOWN)
         })
         getSystemService(PowerManager::class.java).addThermalStatusListener(mainExecutor, thermalListener)
         main.post(lagTick)
@@ -212,7 +219,8 @@ class NodeService : Service() {
         var restarts = 0
         while (!stopping) {
             val plan = NodeConfig.plan(this, prefs.synced)
-            val conf = NodeConfig.write(this, dataDir, plan, prefs.benchLogs, diag.nodeLog)
+            val hints = swiftsyncHints(plan.synced)
+            val conf = NodeConfig.write(this, dataDir, plan, prefs.benchLogs, diag.nodeLog, hints)
             val marker = File(dataDir, "eddy.running")
             if (marker.exists()) diag.event("unclean_previous_exit", "since" to marker.readText())
             marker.writeText(Diagnostics.iso())
@@ -224,6 +232,7 @@ class NodeService : Service() {
             state.update { it.copy(phase = Phase.Starting, detail = "Starting the node", dbcacheMb = plan.dbcacheMb, restarts = restarts) }
 
             val started = SystemClock.elapsedRealtime()
+            stopOrphan()
             val p = try {
                 launchNode(conf)
             } catch (e: IOException) {
@@ -255,6 +264,38 @@ class NodeService : Service() {
         }
         holdLocks(false)
         state.update { it.copy(phase = Phase.Stopped, detail = "", netActive = false) }
+    }
+
+    /**
+     * The SwiftSync hints file, if one is in Eddy's files folder and the first sync isn't done.
+     * A SwiftSync must start from genesis, so the first time hints appear the chain data is reset.
+     */
+    private fun swiftsyncHints(synced: Boolean): File? {
+        val f = File(getExternalFilesDir(null), "swiftsync.hints")
+        if (synced || !f.exists()) return null
+        if (!prefs.swiftsyncStarted) {
+            diag.event("swiftsync_reset", "hints_bytes" to f.length())
+            for (d in listOf("blocks", "chainstate", "swiftsync", "indexes")) File(dataDir, d).deleteRecursively()
+            prefs.swiftsyncStarted = true
+        }
+        return f
+    }
+
+    /** A node still running from an earlier app process holds the data directory: stop it first. */
+    private fun stopOrphan() {
+        val pid = pid() ?: return
+        val cmd = runCatching { File("/proc/$pid/cmdline").readText() }.getOrNull() ?: return
+        if (!cmd.contains("libbitcoind")) return
+        diag.event("orphan_node", "pid" to pid)
+        state.update { it.copy(phase = Phase.Stopping, detail = "Stopping the node left from before") }
+        if (runCatching { rpc.call("stop") }.isFailure) android.os.Process.sendSignal(pid, 15)
+        val until = SystemClock.elapsedRealtime() + 15 * 60_000L
+        while (File("/proc/$pid").exists() && SystemClock.elapsedRealtime() < until) Thread.sleep(500)
+        if (File("/proc/$pid").exists()) {
+            diag.event("orphan_kill", "pid" to pid)
+            android.os.Process.sendSignal(pid, 9)
+            Thread.sleep(2_000)
+        }
     }
 
     private fun launchNode(conf: File): java.lang.Process {
@@ -329,8 +370,12 @@ class NodeService : Service() {
             val battery = probe.battery()
             val thermal = probe.thermalStatus()
             val headroom = probe.thermalHeadroom()
-            hot = if (hot) !(thermal <= PowerManager.THERMAL_STATUS_MODERATE && (headroom.isNaN() || headroom < 0.75f))
-            else thermal >= PowerManager.THERMAL_STATUS_SEVERE || (!headroom.isNaN() && headroom >= 0.9f)
+            // Android already slows the CPU as the phone warms, which keeps the sync going at a safe pace;
+            // pausing on its headroom forecast (0.1.2) stopped the node every few minutes at 33 C.
+            // Pause only when Android itself reports severe throttling, or the battery gets warm
+            // enough to matter while charging.
+            hot = if (hot) !(thermal <= PowerManager.THERMAL_STATUS_MODERATE && battery.tempC < 39.0)
+            else thermal >= PowerManager.THERMAL_STATUS_SEVERE || battery.tempC >= 42.0
 
             if (info != null) {
                 val height = info.getLong("blocks")
@@ -376,6 +421,7 @@ class NodeService : Service() {
                 }
                 val lagNow = lagStats()
                 val peers = runCatching { (rpc.call("getconnectioncount") as Number).toInt() }.getOrDefault(0)
+                val swift = runCatching { rpc.obj("getswiftsyncinfo") }.getOrNull()
                 state.update {
                     it.copy(
                         peers = peers,
@@ -387,6 +433,8 @@ class NodeService : Service() {
                         dbcacheMb = plan.dbcacheMb, batteryPct = battery.pct, charging = battery.charging,
                         batteryTempC = battery.tempC, thermal = thermal, wifi = wifiOk, activeSyncSec = activeSec,
                         lagP95Ms = lagNow.second,
+                        swiftTerminal = swift?.optInt("terminal_height") ?: 0,
+                        swiftActive = swift?.optBoolean("active") ?: false,
                     )
                 }
 
@@ -448,6 +496,7 @@ class NodeService : Service() {
         }
         runCatching { j.put("peers", peerSummary(rpc.arr("getpeerinfo"))) }
         j.put("bench_s", benchFromLog())
+        runCatching { j.put("swiftsync", rpc.obj("getswiftsyncinfo")) }
         j.put("app_rx", TrafficStats.getUidRxBytes(applicationInfo.uid)).put("app_tx", TrafficStats.getUidTxBytes(applicationInfo.uid))
         if (pr != null) {
             j.put("node", JSONObject().put("pid", pid).put("cpu_pct", cpuPct.toInt()).put("cpu_ticks", pr.cpuTicks)
