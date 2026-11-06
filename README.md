@@ -8,7 +8,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.1.0) runs the node; Lightning Fork isn't in the app yet. Nothing
+Early. The Android app (`android/`, version 0.1.1) runs the node; Lightning Fork isn't in the app yet. Nothing
 here holds real funds yet.
 
 Works on an Android 14 x86_64 emulator:
@@ -33,13 +33,15 @@ from the genesis block with `assumevalid=0`. It aims to leave the phone usable w
 
 - **Wi-Fi only for the first sync.** Off Wi-Fi, the node's networking is switched off (`setnetworkactive`).
   Once the chain is synced, mobile data is allowed too.
-- **Low priority.** The node runs at nice 10 with low I/O priority and leaves two cores free (`par`).
+- **Low priority.** The node runs at nice 10 with low I/O priority, so the apps in use get the CPU first,
+  and it checks signatures on every core.
 - **Bounded memory.** The UTXO cache is a sixth of the phone's RAM, at most 2 GB, during the first sync and
   300 MB after it. The node is pruned to 4 GB of blocks.
 - **Pauses.** It pauses when the phone gets hot (Android's thermal status and headroom) or the battery drops
   below 15% off the charger. Optional settings pause it while unplugged or while the screen is on.
 - **Diagnostics.** Every minute it records the node's progress, CPU, memory and I/O, the phone's heat,
-  battery, memory, network and main-thread lag, and every pause, restart and crash. The records sit in
+  battery, memory, network and main-thread lag, where the node's block-connecting time goes (from
+  `-debug=bench`), and every pause, restart and crash. The records sit in
   `Android/data/com.awokenlazarus.eddy/files/diag` (readable over `adb`) with the node's own log, rotated
   and gzipped, and can be shared as one zip from the app.
 

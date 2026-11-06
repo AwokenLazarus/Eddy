@@ -212,7 +212,7 @@ class NodeService : Service() {
         var restarts = 0
         while (!stopping) {
             val plan = NodeConfig.plan(this, prefs.synced)
-            val conf = NodeConfig.write(this, dataDir, plan, prefs.benchLogs)
+            val conf = NodeConfig.write(this, dataDir, plan, prefs.benchLogs, diag.nodeLog)
             val marker = File(dataDir, "eddy.running")
             if (marker.exists()) diag.event("unclean_previous_exit", "since" to marker.readText())
             marker.writeText(Diagnostics.iso())
@@ -244,7 +244,7 @@ class NodeService : Service() {
             val ranS = (SystemClock.elapsedRealtime() - started) / 1000
             if (code == 0) marker.delete()
             diag.event("node_exit", "code" to code, "ran_s" to ranS, "reason" to exit.name,
-                "log_tail" to if (code != 0) Diagnostics.tailLines(File(dataDir, "debug.log"), 40) else null)
+                "log_tail" to if (code != 0) Diagnostics.tailLines(diag.nodeLog, 40) else null)
             if (stopping) break
             if (exit == Exit.ModeChange) { backoff = 5_000; continue }
             restarts++
@@ -402,7 +402,7 @@ class NodeService : Service() {
                     summary.put("milestones", milestones).put("active_sync_s", activeSec)
                         .put("last_height", height).put("last_sample", Diagnostics.iso())
                     diag.writeJson("summary.json", summary)
-                    runCatching { diag.rotateNodeLog(dataDir, pid) }.onFailure { diag.event("log_rotate_failed", "error" to it.toString()) }
+                    runCatching { diag.rotateNodeLog(pid) }.onFailure { diag.event("log_rotate_failed", "error" to it.toString()) }
                 }
                 if (now - lastNote >= 30_000L) { lastNote = now; updateNotification() }
 
@@ -447,6 +447,7 @@ class NodeService : Service() {
             j.put("net_recv", t.getLong("totalbytesrecv")).put("net_sent", t.getLong("totalbytessent"))
         }
         runCatching { j.put("peers", peerSummary(rpc.arr("getpeerinfo"))) }
+        j.put("bench_s", benchFromLog())
         j.put("app_rx", TrafficStats.getUidRxBytes(applicationInfo.uid)).put("app_tx", TrafficStats.getUidTxBytes(applicationInfo.uid))
         if (pr != null) {
             j.put("node", JSONObject().put("pid", pid).put("cpu_pct", cpuPct.toInt()).put("cpu_ticks", pr.cpuTicks)
@@ -469,6 +470,8 @@ class NodeService : Service() {
         val pings = ArrayList<Double>()
         var maxSynced = 0L
         var recv = 0L
+        var inflight = 0
+        val manual = JSONArray()
         for (i in 0 until peers.length()) {
             val p = peers.getJSONObject(i)
             val t = p.optString("connection_type")
@@ -478,11 +481,17 @@ class NodeService : Service() {
             if (p.has("pingtime")) pings.add(p.getDouble("pingtime") * 1000)
             maxSynced = maxOf(maxSynced, p.optLong("synced_blocks"))
             recv += p.optLong("bytesrecv")
+            inflight += p.optJSONArray("inflight")?.length() ?: 0
+            // Bootstrap peers from Eddy's own list (public nodes): how much each one serves.
+            if (t == "manual") manual.put(JSONObject().put("addr", p.optString("addr"))
+                .put("bytes_recv", p.optLong("bytesrecv")).put("synced_blocks", p.optLong("synced_blocks"))
+                .put("ping_ms", (p.optDouble("pingtime", -0.001) * 1000).toInt()))
         }
         pings.sort()
         return JSONObject().put("count", peers.length()).put("types", types).put("versions", versions)
             .put("ping_ms_median", if (pings.isEmpty()) JSONObject.NULL else pings[pings.size / 2].toInt())
             .put("max_synced_blocks", maxSynced).put("bytes_recv", recv)
+            .put("blocks_in_flight", inflight).put("manual", manual)
     }
 
     private fun network(): JSONObject {
@@ -517,9 +526,24 @@ class NodeService : Service() {
 
     /** The UTXO cache size from the node's latest UpdateTip line. */
     private fun cacheFromLog(): Double? = runCatching {
-        val t = String(Diagnostics.tail(File(dataDir, "debug.log"), 256 shl 10))
+        val t = String(Diagnostics.tail(diag.nodeLog, 256 shl 10))
         cacheRe.findAll(t).lastOrNull()?.groupValues?.get(1)?.toDouble()
     }.getOrNull()
+
+    // "[bench]   - Verify 2345 txins: 1.20ms (0.001ms/txin) [83.21s (0.85ms/blk)]": the bracket is the
+    // total since the node started, so the latest line of each step says where the time has gone.
+    private val benchRe = Regex("""\[bench\]\s+-\s+([^:]+):\s+[\d.]+ms[^\[\n]*\[([\d.]+)s""")
+
+    /** Seconds spent in each block-connecting step since the node started (needs -debug=bench). */
+    private fun benchFromLog(): JSONObject = runCatching {
+        val t = String(Diagnostics.tail(diag.nodeLog, 256 shl 10))
+        val j = JSONObject()
+        for (m in benchRe.findAll(t)) {
+            val name = m.groupValues[1].replace(Regex("""\d+ """), "").trim().lowercase().replace(' ', '_')
+            j.put(name, m.groupValues[2].toDouble())
+        }
+        j
+    }.getOrDefault(JSONObject())
 
     private fun dirSize(f: File): Long = f.walkTopDown().filter { it.isFile }.sumOf { it.length() }
 

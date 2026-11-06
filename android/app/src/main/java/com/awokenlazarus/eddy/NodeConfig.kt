@@ -27,12 +27,13 @@ object NodeConfig {
         // A big UTXO cache is the main speed lever during the first sync, but a sixth of RAM (at
         // most 2 GB) keeps the rest of the phone out of swap. Once synced, a small cache is enough.
         val dbcache = if (synced) 300 else (totalMb / 6).coerceIn(450, 2048)
-        // Leave two cores for the user.
-        val par = (cores - 2).coerceAtLeast(1)
+        // Every core checks signatures; the node's low priority (nice 10) keeps the phone responsive,
+        // and the diagnostics measure that. (Knots' main thread is one of the par threads.)
+        val par = cores
         return Plan(dbcache, par, synced, totalMb, cores)
     }
 
-    fun write(ctx: Context, dataDir: File, plan: Plan, benchLogs: Boolean): File {
+    fun write(ctx: Context, dataDir: File, plan: Plan, benchLogs: Boolean, logFile: File): File {
         val peers = runCatching {
             ctx.assets.open("peers.txt").bufferedReader().readLines()
         }.getOrDefault(emptyList()).map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }
@@ -64,6 +65,9 @@ object NodeConfig {
             add("rpcport=$RPC_PORT")
             add("rpcthreads=4")
             add("shrinkdebugfile=0")
+            // One copy of the node's log, where adb and the share button can reach it.
+            add("printtoconsole=0")
+            add("debuglogfile=${logFile.path}")
             if (benchLogs) add("debug=bench")
             peers.forEach { add("addnode=$it") }
         }

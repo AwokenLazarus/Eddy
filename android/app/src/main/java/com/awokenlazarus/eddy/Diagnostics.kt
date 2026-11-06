@@ -25,6 +25,8 @@ import java.util.zip.ZipOutputStream
 class Diagnostics(ctx: Context) {
     val root: File = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "diag").apply { mkdirs() }
     val nodeLogs: File = File(root, "node-logs").apply { mkdirs() }
+    /** The node's live debug.log (written there via -debuglogfile). */
+    val nodeLog: File = File(root, "debug.log")
     private val cacheDir = ctx.cacheDir
 
     @Synchronized
@@ -52,10 +54,10 @@ class Diagnostics(ctx: Context) {
         runCatching { JSONObject(File(root, name).readText()) }.getOrDefault(JSONObject())
 
     /** Move debug.log aside once it passes 64 MB, tell the node to reopen it, and gzip the old one. */
-    fun rotateNodeLog(dataDir: File, pid: Int?) {
-        val log = File(dataDir, "debug.log")
+    fun rotateNodeLog(pid: Int?) {
+        val log = nodeLog
         if (log.length() < ROTATE_BYTES) return
-        val aside = File(dataDir, "debug-rotating.log")
+        val aside = File(root, "debug-rotating.log")
         if (aside.exists() || !log.renameTo(aside)) return
         if (pid != null) android.os.Process.sendSignal(pid, 1) // SIGHUP: reopen debug.log
         val out = File(nodeLogs, "debug-${stamp()}.log.gz")
@@ -77,7 +79,7 @@ class Diagnostics(ctx: Context) {
         dir.listFiles()?.forEach { it.delete() }
         val zip = File(dir, "eddy-diagnostics-${stamp()}.zip")
         ZipOutputStream(zip.outputStream()).use { z ->
-            root.listFiles()?.filter { it.isFile }?.forEach { f ->
+            root.listFiles()?.filter { it.isFile && it != nodeLog }?.forEach { f ->
                 z.putNextEntry(ZipEntry("diag/${f.name}"))
                 f.inputStream().use { it.copyTo(z) }
                 z.closeEntry()
@@ -87,7 +89,7 @@ class Diagnostics(ctx: Context) {
                 f.inputStream().use { it.copyTo(z) }
                 z.closeEntry()
             }
-            File(dataDir, "debug.log").takeIf { it.exists() }?.let { f ->
+            nodeLog.takeIf { it.exists() }?.let { f ->
                 z.putNextEntry(ZipEntry("debug-tail.log"))
                 z.write(tail(f, 8 shl 20))
                 z.closeEntry()
