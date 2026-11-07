@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.4.0) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.4.1) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -90,10 +90,11 @@ Where the data comes from, all of it untrusted:
   spends nothing). The same undo data also comes in packs, listed in `v1/<end block hash>/packs.json`:
   `v1/<end block hash>/pack/<first>-<last>.gz` holds every block in that height range that spends
   something, about 16 MB each before gzip. Eddy downloads the hints on its first start over Wi-Fi and
-  checks the SHA-256. It then streams packs four at a time, keeping up to 768 MB unzipped ahead of the
-  tip, checks each against its listed SHA-256 and size, and hands it to the node
-  (`loadswiftsyncundopack`), which reads each block's entry from the file as the block connects. One
-  request per block had capped a phone at a few dozen blocks a second. Single files fill any gaps near
+  checks the SHA-256. It then streams packs twelve at a time (one connection is latency-bound; twelve
+  fill a home link), keeping up to 768 MB unzipped ahead of the tip. It checks each against its listed
+  SHA-256 and size and hands it to the node (`loadswiftsyncundopack`), which reads each block's entry
+  from the file as the block connects. One request per block had capped a phone at a few dozen blocks
+  a second. Single files fill any gaps near
   the tip (`getswiftsyncwants`, `submitswiftsyncundo`); the node never asks for a block that spends
   nothing, so a 404 there means the file isn't up yet, and Eddy tries again two minutes later.
 - **Peers running the fork.** `getswundo`/`swundo` and the batched `getswundos`/`swundos` messages, sent to

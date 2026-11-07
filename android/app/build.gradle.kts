@@ -13,8 +13,8 @@ android {
         // The bundled node binaries are built for API 30.
         minSdk = 30
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.4.0"
+        versionCode = 18
+        versionName = "0.4.1"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 

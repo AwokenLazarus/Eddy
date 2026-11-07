@@ -38,7 +38,7 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         private const val RETRY_404_MS = 120_000L
         /** Unzipped pack data kept on disk ahead of the tip. */
         private const val PACK_AHEAD_BYTES = 768L shl 20
-        private const val PACK_PARALLEL = 4
+        private const val PACK_PARALLEL = 12
         /** With packs, single files are fetched only this close to the tip (gaps, or a pack still downloading). */
         private const val SINGLES_NEAR_TIP = 16
     }
