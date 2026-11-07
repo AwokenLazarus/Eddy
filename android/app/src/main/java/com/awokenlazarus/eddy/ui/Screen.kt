@@ -192,7 +192,8 @@ private fun Stats(s: NodeState) {
         Triple("DOWNLOADED", bytes(s.recvBytes), "this session"),
         Triple("DISK", bytes(s.diskBytes), "of 32 GB budget"),
         Triple("UTXO CACHE", "%,d MB".format(s.cacheMb.toLong()), "of %,d MB".format(s.dbcacheMb)),
-        Triple("NODE CPU", "%.1f cores".format(s.nodeCpuPct / 100), "low priority"),
+        Triple("NODE CPU", "%.1f cores".format(s.nodeCpuPct / 100),
+            if (s.coreLimit in 1 until s.coresTotal) "cooling: ${s.coreLimit} of ${s.coresTotal} cores" else "low priority"),
         Triple("NODE RAM", bytes(s.nodeRssBytes), ""),
         Triple("BATTERY", if (s.batteryPct >= 0) "${s.batteryPct}%" else "–", "%.1f °C · %s".format(s.batteryTempC,
             when { s.filling -> "charging"; s.charging -> "plugged in, not charging"; else -> "on battery" })),
@@ -253,7 +254,7 @@ private fun SettingsCard(s: Settings, change: (Settings) -> Unit) {
         Toggle("Wi-Fi only for the first sync", "No mobile data until the chain is synced; after that, either.", true, enabled = false) {}
         Toggle("Only while charging", "Pause when the phone is unplugged.", s.chargingOnly) { change(s.copy(chargingOnly = it)) }
         Toggle("Battery guard", "Pause below 15% on battery, and below 10% during the first sync even when plugged in.", true, enabled = false) {}
-        Toggle("Pause when hot", "Pause if Android reports severe heat or the battery reaches 42 °C.", s.pauseHot) { change(s.copy(pauseHot = it)) }
+        Toggle("Pause when hot", "Fewer cores as the phone warms; a pause at critical heat or a 43 °C battery.", s.pauseHot) { change(s.copy(pauseHot = it)) }
         Toggle("Pause while I use the phone", "Sync only with the screen off.", s.pauseInUse) { change(s.copy(pauseInUse = it)) }
         Toggle("Detailed timing logs", "Per-block timings for diagnostics (takes effect at the next start).", s.benchLogs) { change(s.copy(benchLogs = it)) }
     }

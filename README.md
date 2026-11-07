@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.4.1) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.4.2) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -46,9 +46,13 @@ it syncs:
 - **Bounded memory and storage.** The UTXO cache is a sixth of the phone's RAM, at most 2 GB, during the
   first sync and 300 MB after it. The node is pruned to 4 GB of blocks. Everything Eddy stores counts
   against a 32 GB budget shown on screen.
-- **Pauses.** It pauses when Android reports severe heat or the battery reaches 42 °C, when the battery
-  drops below 15% off the charger, or below 10% during the first sync even when plugged in (it resumes at
-  15%). Optional settings pause it while unplugged or while the screen is on.
+- **Heat.** As the phone nears its throttling point (Android's thermal headroom at 0.95, severe
+  status, or a 41 °C battery), the node is moved onto fewer cores, two at a time and the fastest first,
+  and given them back one at a time as the phone cools. It keeps its peers and keeps validating. It
+  pauses only at critical heat or a 43 °C battery.
+- **Pauses.** It pauses when the battery drops below 15% off the charger, or below 10% during the first
+  sync even when plugged in (it resumes at 15%). Optional settings pause it while unplugged or while the
+  screen is on.
 - **Diagnostics.** Every minute it records the node's progress, CPU, memory and I/O, the phone's heat,
   battery, memory, network and main-thread lag, where the node's block-connecting time goes (from
   `-debug=bench`), SwiftSync downloads, and every pause, restart and crash. The records sit in

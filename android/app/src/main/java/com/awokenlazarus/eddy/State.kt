@@ -22,6 +22,9 @@ data class NodeState(
     val recvBytes: Long = 0,
     val nodeRssBytes: Long = 0,
     val nodeCpuPct: Double = 0.0,
+    /** Cores the node may use (fewer while the phone cools) and the phone's total. */
+    val coreLimit: Int = 0,
+    val coresTotal: Int = 0,
     val cacheMb: Double = 0.0,
     val dbcacheMb: Int = 0,
     val batteryPct: Int = -1,

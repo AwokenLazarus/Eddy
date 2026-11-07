@@ -424,12 +424,13 @@ class NodeService : Service() {
             val battery = probe.battery()
             val thermal = probe.thermalStatus()
             val headroom = probe.thermalHeadroom()
-            // Android already slows the CPU as the phone warms, which keeps the sync going at a safe pace;
-            // pausing on its headroom forecast (0.1.2) stopped the node every few minutes at 33 C.
-            // Pause only when Android itself reports severe throttling, or the battery gets warm
-            // enough to matter while charging.
-            hot = if (hot) !(thermal <= PowerManager.THERMAL_STATUS_MODERATE && battery.tempC < 39.0)
-            else thermal >= PowerManager.THERMAL_STATUS_SEVERE || battery.tempC >= 42.0
+            // Heat: first the node gets fewer cores (governCores), which keeps it validating and
+            // connected while the phone cools. A full pause only at critical heat, or a battery
+            // warm enough to matter while charging. Pausing at severe heat (0.3.x) stopped a fast
+            // sync every few minutes and dropped all its peers each time.
+            hot = if (hot) !(thermal <= PowerManager.THERMAL_STATUS_MODERATE && battery.tempC < 40.0)
+            else thermal >= PowerManager.THERMAL_STATUS_CRITICAL || battery.tempC >= 43.0
+            governCores(pid(), thermal, headroom, battery.tempC)
 
             if (info != null) {
                 val height = info.getLong("blocks")
@@ -503,6 +504,7 @@ class NodeService : Service() {
                         netLabel = netLabel(), filling = battery.filling,
                         swiftTerminal = swift?.optInt("terminal_height") ?: 0,
                         swiftActive = swift?.optBoolean("active") ?: false,
+                        coreLimit = nodeCores, coresTotal = coreOrder.size,
                     )
                 }
 
@@ -537,6 +539,55 @@ class NodeService : Service() {
             fetchJob?.cancel()
         }
         return if (stopping) Exit.Stopped else Exit.Crashed
+    }
+
+    /** Cores, slowest first (by max frequency): when the node gets fewer, it keeps the cool ones. */
+    private val coreOrder: List<Int> by lazy {
+        val mhz = probe.cpuMaxFreqsMhz()
+        (0 until mhz.length()).sortedWith(compareBy({ mhz.optLong(it) }, { it }))
+    }
+    /** Cores the node may run on now (0 until the first check). */
+    @Volatile private var nodeCores = 0
+    private var coresChangedAt = 0L
+    private var coresPid = -1
+    private var coresFailedAt = -1L
+
+    /**
+     * Fewer cores for the node as the phone nears its throttling point (headroom 1.0 is where Android
+     * throttles hard), more as it cools: two at a time down, one at a time up, with time between
+     * steps to see the effect. Done with the node's CPU affinity, so it keeps its peers and its place.
+     */
+    private fun governCores(pid: Int?, thermal: Int, headroom: Float, tempC: Double) {
+        val all = coreOrder.size
+        if (all == 0 || pid == null) return
+        if (nodeCores == 0) nodeCores = all
+        val now = SystemClock.elapsedRealtime()
+        val guard = prefs.pauseHot
+        val warm = guard && (thermal >= PowerManager.THERMAL_STATUS_SEVERE || (!headroom.isNaN() && headroom >= 0.95f) || tempC >= 41.0)
+        val cool = !guard || (thermal <= PowerManager.THERMAL_STATUS_LIGHT && (headroom.isNaN() || headroom < 0.80f) && tempC < 39.0)
+        val target = when {
+            warm && nodeCores > 1 && now - coresChangedAt >= 30_000L -> maxOf(1, nodeCores - 2)
+            cool && nodeCores < all && now - coresChangedAt >= 120_000L -> nodeCores + 1
+            else -> nodeCores
+        }
+        if (target == nodeCores && pid == coresPid) return
+        if (coresFailedAt >= 0 && now - coresFailedAt < 300_000L) return
+        val mask = coreOrder.take(target).fold(0L) { m, c -> m or (1L shl c) }
+        val ok = runCatching {
+            val p = ProcessBuilder("/system/bin/taskset", "-a", "-p", java.lang.Long.toHexString(mask), pid.toString())
+                .redirectErrorStream(true).start()
+            p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0
+        }.getOrDefault(false)
+        if (target != nodeCores || !ok) {
+            diag.event("node_cores", "from" to nodeCores, "to" to target, "ok" to ok, "thermal" to thermal,
+                "headroom" to if (headroom.isNaN()) null else headroom.toDouble(), "battery_c" to tempC)
+        }
+        coresFailedAt = if (ok) -1L else now
+        if (ok) {
+            if (target != nodeCores) coresChangedAt = now
+            nodeCores = target
+            coresPid = pid
+        }
     }
 
     /** First sync: paused because the battery fell below 10%, even on a charger; resumes at 15%. */
@@ -586,7 +637,8 @@ class NodeService : Service() {
         }
         j.put("battery", JSONObject().put("pct", b.pct).put("charging", b.charging).put("plugged", b.plugged)
             .put("temp_c", b.tempC).put("mv", b.mv).put("current_ua", b.currentUa))
-        j.put("thermal", JSONObject().put("status", thermal).put("headroom", if (headroom.isNaN()) JSONObject.NULL else headroom.toDouble()).put("hot", hot))
+        j.put("thermal", JSONObject().put("status", thermal).put("headroom", if (headroom.isNaN()) JSONObject.NULL else headroom.toDouble()).put("hot", hot)
+            .put("node_cores", nodeCores))
         j.put("cpu_mhz", probe.cpuFreqsMhz()).put("memory", probe.memory()).put("power", probe.power()).put("pressure", probe.pressure())
         j.put("lag_ms", JSONObject().put("p50", lag.first).put("p95", lag.second).put("max", lag.third))
         j.put("network", network())
@@ -748,6 +800,22 @@ class NodeService : Service() {
 object BuildConfigVersion {
     fun name(ctx: Context): String =
         runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" }.getOrDefault("")
+}
+
+/**
+ * Stops the node cleanly without the UI, for updates over adb:
+ * `adb shell am broadcast -a com.awokenlazarus.eddy.ops.STOP -n com.awokenlazarus.eddy/.OpsReceiver`.
+ * It leaves "keep running" on, so installing the update starts the node again (MY_PACKAGE_REPLACED).
+ * Only the adb shell can send it (the receiver requires android.permission.DUMP).
+ */
+class OpsReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        if (i.action != "com.awokenlazarus.eddy.ops.STOP") return
+        Diagnostics(c).event("ops_stop")
+        // The app has a foreground service running, so this is not a background start.
+        runCatching { c.startService(Intent(c, NodeService::class.java).setAction(NodeService.ACTION_STOP)) }
+            .onFailure { Diagnostics(c).event("ops_stop_failed", "error" to it.toString().take(200)) }
+    }
 }
 
 class BootReceiver : BroadcastReceiver() {
