@@ -23,11 +23,15 @@ import java.util.concurrent.atomic.AtomicLong
  *  - v1/latest.json names the current hints file (height, block hash, size, SHA-256).
  *  - v1/<hash>/hints is the hints file.
  *  - v1/<hash>/undo/<block hash> is one block's undo data; 404 means the block spends nothing.
+ *
+ * The node never asks for a block it knows spends nothing, so a 404 here means the file isn't up
+ * (yet): it is asked for again later, and peers can supply it meanwhile.
  */
 class SwiftSyncFetcher(private val diag: Diagnostics) {
     companion object {
         const val BASE = "https://swiftsync.lightning-stream.com/"
         private const val PARALLEL = 8
+        private const val RETRY_404_MS = 120_000L
     }
 
     val files = AtomicLong()
@@ -85,7 +89,7 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
     fun run(scope: CoroutineScope, rpc: Rpc, alive: () -> Boolean, allowed: () -> Boolean) = scope.launch(Dispatchers.IO) {
         val gate = Semaphore(PARALLEL)
         val inflight = ConcurrentHashMap.newKeySet<String>()
-        val skip = ConcurrentHashMap.newKeySet<String>() // 404: spends nothing
+        val retryAt = ConcurrentHashMap<String, Long>() // 404: not hosted (yet); ask again after this
         while (isActive && alive()) {
             val info = runCatching { rpc.obj("getswiftsyncinfo") }.getOrNull()
             if (info == null) { delay(2_000); continue }
@@ -96,16 +100,19 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
             var started = 0
             if (wants != null) for (i in 0 until wants.length()) {
                 val hash = wants.getJSONObject(i).getString("hash")
-                if (hash in skip || !inflight.add(hash)) continue
+                val wait = retryAt[hash]
+                if (wait != null && System.currentTimeMillis() < wait) continue
+                if (!inflight.add(hash)) continue
                 started++
                 launch {
                     gate.withPermit {
                         try {
                             val data = get(BASE + "v1/$terminal/undo/$hash")
                             if (data == null) {
-                                skip.add(hash)
-                                missing.incrementAndGet()
+                                retryAt[hash] = System.currentTimeMillis() + RETRY_404_MS
+                                if (missing.incrementAndGet() % 100 == 1L) diag.event("swiftsync_fetch_missing", "hash" to hash)
                             } else {
+                                retryAt.remove(hash)
                                 rpc.call("submitswiftsyncundo", hash, hex(data))
                                 files.incrementAndGet()
                                 bytes.addAndGet(data.size.toLong())

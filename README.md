@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.3.3) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.3.4) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -88,7 +88,9 @@ Where the data comes from, all of it untrusted:
   (height, block hash, size, SHA-256). The hints file is at `v1/<end block hash>/hints` and each block's
   undo data at `v1/<end block hash>/undo/<block hash>` (a serialized `CBlockUndo`; 404 means the block
   spends nothing). Eddy downloads the hints on its first start over Wi-Fi, checks the SHA-256, and fetches
-  undo data eight files at a time ahead of the node (`getswiftsyncwants`, `submitswiftsyncundo`).
+  undo data eight files at a time ahead of the node (`getswiftsyncwants`, `submitswiftsyncundo`). The node
+  never asks for a block that spends nothing, so a 404 for one it asks for means the file isn't up yet,
+  and Eddy tries again two minutes later.
 - **Peers running the fork.** `getswundo`/`swundo` and the batched `getswundos`/`swundos` messages, sent to
   manually added peers.
 
