@@ -8,7 +8,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.2.5) runs the node; Lightning Fork isn't in the app yet. Nothing
+Early. The Android app (`android/`, version 0.3.0) runs the node; Lightning Fork isn't in the app yet. Nothing
 here holds real funds yet.
 
 Works on an Android 14 x86_64 emulator:
@@ -50,7 +50,9 @@ from the genesis block with `assumevalid=0`. It aims to leave the phone usable w
   in its files folder, the first sync skips the UTXO database for coins spent before the hints' end height,
   which is most of them. It still checks every block and signature, using the spent coins a peer serves, and
   a running total proves at the end height that those coins were real. A bad hints file or bad served data
-  stops the sync with an error; it can't make the node accept an invalid chain.
+  stops the sync with an error; it can't make the node accept an invalid chain. Eddy fetches the hints
+  file and the spent coins from plain file hosting (`swiftsync.lightning-stream.com`, eight downloads at a
+  time) and hands them to the node, which also accepts them from peers running the fork.
 
 Build it with `scripts/build-android-app.sh` after building Knots for `aarch64` (and `x86_64` for the
 emulator). The fonts are Inter and JetBrains Mono (SIL Open Font License), converted from woff2 at build

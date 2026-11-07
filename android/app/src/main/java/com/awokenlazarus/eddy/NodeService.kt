@@ -81,6 +81,7 @@ class NodeService : Service() {
     private lateinit var probe: Probe
     private lateinit var dataDir: File
     private lateinit var rpc: Rpc
+    private lateinit var fetcher: SwiftSyncFetcher
     private var loop: Job? = null
     @Volatile private var proc: java.lang.Process? = null
     @Volatile private var stopping = false
@@ -157,6 +158,7 @@ class NodeService : Service() {
         probe = Probe(this)
         dataDir = dataDir(this)
         rpc = Rpc(dataDir, NodeConfig.RPC_PORT)
+        fetcher = SwiftSyncFetcher(diag)
         cm = getSystemService(ConnectivityManager::class.java)
         createChannel()
         cm.registerDefaultNetworkCallback(netCallback)
@@ -274,7 +276,10 @@ class NodeService : Service() {
      */
     private fun swiftsyncHints(synced: Boolean): File? {
         val f = File(getExternalFilesDir(null), "swiftsync.hints")
-        if (synced || !f.exists()) return null
+        if (synced) return null
+        // Fetch the current hints from file hosting on the first start, on Wi-Fi only.
+        if (!f.exists() && !prefs.swiftsyncStarted && wifiOk) fetcher.ensureHints(f)
+        if (!f.exists()) return null
         if (!prefs.swiftsyncStarted) {
             // Start the records fresh too, so the SwiftSync run's milestones and timings stand alone;
             // the earlier run's files move to diag/before-swiftsync-<time>/.
@@ -362,6 +367,9 @@ class NodeService : Service() {
         if (!summary.has("first_start")) summary.put("first_start", Diagnostics.iso())
         activeSec = summary.optLong("active_sync_s", 0)
 
+        // SwiftSync undo data from file hosting, alongside any peer that serves it over P2P.
+        val fetchJob = if (!plan.synced) fetcher.run(scope, rpc, { p.isAlive && !stopping }, { netActive == true }) else null
+        try {
         while (p.isAlive && !stopping) {
             val now = SystemClock.elapsedRealtime()
             val info = try {
@@ -475,6 +483,9 @@ class NodeService : Service() {
             lastTick = now
             withTimeoutOrNull(POLL_MS) { kicks.receive() }
         }
+        } finally {
+            fetchJob?.cancel()
+        }
         return if (stopping) Exit.Stopped else Exit.Crashed
     }
 
@@ -507,6 +518,7 @@ class NodeService : Service() {
         runCatching { j.put("peers", peerSummary(rpc.arr("getpeerinfo"))) }
         j.put("bench_s", benchFromLog())
         runCatching { j.put("swiftsync", rpc.obj("getswiftsyncinfo")) }
+        j.put("swiftsync_cdn", fetcher.stats())
         j.put("app_rx", TrafficStats.getUidRxBytes(applicationInfo.uid)).put("app_tx", TrafficStats.getUidTxBytes(applicationInfo.uid))
         if (pr != null) {
             j.put("node", JSONObject().put("pid", pid).put("cpu_pct", cpuPct.toInt()).put("cpu_ticks", pr.cpuTicks)
