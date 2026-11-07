@@ -142,15 +142,24 @@ private fun Pill(p: Phase) {
 @Composable
 private fun ProgressCard(s: NodeState) {
     Column(Modifier.fillMaxWidth().card(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("CHAIN VALIDATED (BY TRANSACTIONS)", style = label)
+        // The big number is blocks validated, which is what people expect. Knots' own progress figure
+        // counts transactions, which barely moves through the nearly empty early years, so it's
+        // shown underneath instead.
+        val blocks = if (s.headers > 0) s.height.toDouble() / s.headers else 0.0
+        Text("CHAIN VALIDATED", style = label)
         Text(
-            if (s.progress < 0.01) "%.3f%%".format(s.progress * 100) else "%.2f%%".format(s.progress * 100),
+            if (blocks < 0.1) "%.1f%%".format(blocks * 100) else "%.0f%%".format(blocks * 100),
             style = TextStyle(fontFamily = Mono, fontSize = 46.sp, fontWeight = FontWeight(700), color = C.volt),
         )
-        Bar(s.progress.toFloat())
+        Bar(blocks.toFloat())
         Text(
             if (s.headers > 0) "Block %,d of %,d".format(s.height, s.headers) else "Waiting for the first headers",
             style = num.copy(color = C.ink2, fontSize = 15.sp),
+        )
+        Text(
+            (if (s.progress < 0.01) "%.3f%%" else "%.1f%%").format(s.progress * 100) +
+                " of all transactions (the later years hold most of them)",
+            style = small,
         )
         val line = buildList {
             if (s.tipTime > 0) add("Up to " + SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(s.tipTime * 1000)))
