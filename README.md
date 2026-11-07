@@ -116,6 +116,25 @@ Android.
 It's the start of a lighter Rust node for phones short on storage, and that work is paused while the
 Knots build comes first.
 
+## Credits
+
+Eddy is built on other people's work:
+
+- [Bitcoin Knots](https://github.com/bitcoinknots/bitcoin), maintained by Luke Dashjr, and
+  [Bitcoin Core](https://github.com/bitcoin/bitcoin), whose contributors wrote the node Eddy runs. Knots
+  also carries the BLAKE2b proof-of-work rules Eddy validates.
+- SwiftSync was designed by Ruben Somsen
+  ([write-up](https://gist.github.com/RubenSomsen/a61a37d14182ccd78760e477c78133cd)). Eddy's fork follows
+  it and the draft BIPs 455-457 ([bitcoin/bips#2152](https://github.com/bitcoin/bips/pull/2152)), and
+  learned from the Bitcoin Core prototype in
+  [bitcoin/bitcoin#34004](https://github.com/bitcoin/bitcoin/pull/34004).
+- [Lightning Fork](https://github.com/paulscode/lightning-fork), and the
+  [lnd](https://github.com/lightningnetwork/lnd) it is built on.
+- [Floresta](https://github.com/getfloresta/Floresta) and
+  [rust-bitcoin](https://github.com/rust-bitcoin/rust-bitcoin), behind `crates/eddy-headers`.
+- The fonts [Inter](https://rsms.me/inter/) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), under
+  the SIL Open Font License.
+
 ## License
 
 MIT or Apache-2.0, at your option. Bitcoin Knots, Lightning Fork, Floresta and rust-bitcoin carry their own licenses.
