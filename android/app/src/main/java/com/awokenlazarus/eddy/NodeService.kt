@@ -406,7 +406,7 @@ class NodeService : Service() {
         activeSec = summary.optLong("active_sync_s", 0)
 
         // SwiftSync undo data from file hosting, alongside any peer that serves it over P2P.
-        val fetchJob = if (!plan.synced) fetcher.run(scope, rpc, { p.isAlive && !stopping }, { netActive == true }) else null
+        val fetchJob = if (!plan.synced) fetcher.run(scope, rpc, File(dataDir, "swiftsync/packs"), { p.isAlive && !stopping }, { netActive == true }) else null
         try {
         while (p.isAlive && !stopping) {
             val now = SystemClock.elapsedRealtime()

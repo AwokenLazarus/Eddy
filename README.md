@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.3.5) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.4.0) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -87,15 +87,21 @@ Where the data comes from, all of it untrusted:
 - **File hosting.** `https://swiftsync.lightning-stream.com/v1/latest.json` names the current hints file
   (height, block hash, size, SHA-256). The hints file is at `v1/<end block hash>/hints` and each block's
   undo data at `v1/<end block hash>/undo/<block hash>` (a serialized `CBlockUndo`; 404 means the block
-  spends nothing). Eddy downloads the hints on its first start over Wi-Fi, checks the SHA-256, and fetches
-  undo data 48 files at a time ahead of the node (`getswiftsyncwants`, `submitswiftsyncundo`). The node
-  never asks for a block that spends nothing, so a 404 for one it asks for means the file isn't up yet,
-  and Eddy tries again two minutes later.
+  spends nothing). The same undo data also comes in packs, listed in `v1/<end block hash>/packs.json`:
+  `v1/<end block hash>/pack/<first>-<last>.gz` holds every block in that height range that spends
+  something, about 16 MB each before gzip. Eddy downloads the hints on its first start over Wi-Fi and
+  checks the SHA-256. It then streams packs four at a time, keeping up to 768 MB unzipped ahead of the
+  tip, checks each against its listed SHA-256 and size, and hands it to the node
+  (`loadswiftsyncundopack`), which reads each block's entry from the file as the block connects. One
+  request per block had capped a phone at a few dozen blocks a second. Single files fill any gaps near
+  the tip (`getswiftsyncwants`, `submitswiftsyncundo`); the node never asks for a block that spends
+  nothing, so a 404 there means the file isn't up yet, and Eddy tries again two minutes later.
 - **Peers running the fork.** `getswundo`/`swundo` and the batched `getswundos`/`swundos` messages, sent to
   manually added peers.
 
 A node running the fork with full blocks and undo data can produce all of it: `generateswiftsynchints
-<file>` writes a hints file for its tip, and `exportswiftsyncundo <dir> <height>` writes the undo files.
+<file>` writes a hints file for its tip, `exportswiftsyncundo <dir> <height>` writes the undo files, and
+the fork's `contrib/swiftsync/make-undo-packs.py` bundles them into packs.
 `-swiftsync=<file>` starts a SwiftSync, and `getswiftsyncinfo` reports its progress. The hints and undo
 formats are this fork's own; they follow Ruben Somsen's SwiftSync design and the draft BIPs 455-457 but
 not their wire formats.
