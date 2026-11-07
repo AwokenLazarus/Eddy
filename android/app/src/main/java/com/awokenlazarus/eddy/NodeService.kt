@@ -73,7 +73,10 @@ class NodeService : Service() {
         fun dataDir(ctx: Context) = File(ctx.noBackupFilesDir, "bitcoin").apply { mkdirs() }
     }
 
-    private enum class Exit { Crashed, ModeChange, Stopped }
+    private enum class Exit { Crashed, ModeChange, Stopped, SwiftFallback }
+
+    /** Why the running SwiftSync can't go on, as the node reported it (getswiftsyncinfo "error"). */
+    @Volatile private var swiftError: String? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var prefs: Prefs
@@ -252,6 +255,7 @@ class NodeService : Service() {
                 Exit.Crashed
             }
             if (exit == Exit.ModeChange) shutdownNode("mode_change")
+            if (exit == Exit.SwiftFallback) shutdownNode("swiftsync_fallback")
             val code = waitExit(p, 15 * 60_000L)
             proc = null
             val ranS = (SystemClock.elapsedRealtime() - started) / 1000
@@ -260,6 +264,20 @@ class NodeService : Service() {
                 "log_tail" to if (code != 0) Diagnostics.tailLines(diag.nodeLog, 40) else null)
             if (stopping) break
             if (exit == Exit.ModeChange) { backoff = 5_000; continue }
+            // A SwiftSync that can't go on: the node reported it, or stopped with one of its errors.
+            val log = if (code != 0) Diagnostics.tailLines(diag.nodeLog, 80) else ""
+            val swiftFatal = exit == Exit.SwiftFallback ||
+                listOf("SwiftSync could not validate", "hints file is wrong", "SwiftSync failed at its terminal",
+                    "SwiftSync hints are malformed", "SwiftSync: hints file", "SwiftSync: this chain state").any { it in log }
+            val swiftInterrupted = "SwiftSync was interrupted while writing" in log ||
+                "SwiftSync must start from the genesis block" in log
+            if (swiftFatal || swiftInterrupted) {
+                swiftFallback(keepHints = swiftInterrupted && !swiftFatal, reason = swiftError
+                    ?: log.lines().lastOrNull { "SwiftSync" in it }?.take(300) ?: "SwiftSync stopped")
+                swiftError = null
+                backoff = 5_000
+                continue
+            }
             restarts++
             if (ranS > 600) backoff = 5_000
             state.update { it.copy(phase = Phase.Error, detail = "The node stopped (code $code); restarting", restarts = restarts) }
@@ -276,7 +294,7 @@ class NodeService : Service() {
      */
     private fun swiftsyncHints(synced: Boolean): File? {
         val f = File(getExternalFilesDir(null), "swiftsync.hints")
-        if (synced) return null
+        if (synced || prefs.swiftsyncDisabled) return null
         // Fetch the current hints from file hosting on the first start, on Wi-Fi only.
         if (!f.exists() && !prefs.swiftsyncStarted && wifiOk) fetcher.ensureHints(f)
         if (!f.exists()) return null
@@ -292,6 +310,26 @@ class NodeService : Service() {
             prefs.swiftsyncStarted = true
         }
         return f
+    }
+
+    /**
+     * A SwiftSync that can't go on. Its UTXO set is partial, so the chain data is wiped either way.
+     * Bad or wrong data (keepHints = false): set the hints aside and sync the ordinary way from genesis.
+     * An interrupted write (keepHints = true): the data was fine, so start the SwiftSync again.
+     */
+    private fun swiftFallback(keepHints: Boolean, reason: String) {
+        diag.event("swiftsync_fallback", "keep_hints" to keepHints, "reason" to reason)
+        for (d in listOf("blocks", "chainstate", "swiftsync", "indexes")) File(dataDir, d).deleteRecursively()
+        File(dataDir, "eddy.running").delete()
+        if (!keepHints) {
+            prefs.swiftsyncDisabled = true
+            val f = File(getExternalFilesDir(null), "swiftsync.hints")
+            if (f.exists()) f.renameTo(File(f.path + ".failed"))
+        }
+        state.update {
+            it.copy(swiftNote = if (keepHints) "SwiftSync was interrupted while saving; it starts again from the first block."
+                else "SwiftSync stopped ($reason). Syncing the ordinary way from the first block; every block is still checked.")
+        }
     }
 
     /** A node still running from an earlier app process holds the data directory: stop it first. */
@@ -447,6 +485,10 @@ class NodeService : Service() {
                 val lagNow = lagStats()
                 val peers = runCatching { (rpc.call("getconnectioncount") as Number).toInt() }.getOrDefault(0)
                 val swift = runCatching { rpc.obj("getswiftsyncinfo") }.getOrNull()
+                swift?.optString("error")?.takeIf { it.isNotEmpty() }?.let { err ->
+                    swiftError = err
+                    return Exit.SwiftFallback
+                }
                 state.update {
                     it.copy(
                         peers = peers,

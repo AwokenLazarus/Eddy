@@ -162,6 +162,7 @@ private fun ProgressCard(s: NodeState) {
             if (s.ibd && s.phase == Phase.Syncing) add(s.etaSeconds?.let { "about ${duration(it)} left" } ?: "estimating time left")
         }.joinToString(" · ")
         if (line.isNotEmpty()) Text(line, style = small)
+        if (s.swiftNote.isNotEmpty()) Text(s.swiftNote, style = small.copy(color = C.warn))
         if (s.swiftActive && s.swiftTerminal > 0) {
             Text(
                 "SwiftSync: every block and signature is checked now; the coins it was given are proven at block %,d.".format(s.swiftTerminal),

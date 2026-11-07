@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.3.2) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.3.3) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -70,6 +70,14 @@ bad hints file or bad undo data can only make the sync stop with an error; it ca
 an invalid chain. A block that fails with served undo data is never marked invalid: the data is fetched
 again, and after three failures the node stops. Until the end height, coins are checked against the data
 given and proven only at the end height; blocks after it are checked the ordinary way.
+
+A bad source can still waste time or stop a sync, so the node and the app limit that. Undo data that fails
+a block is blamed on its source: a peer stops being asked, and file hosting's copy is replaced by a peer's.
+The hints file is parsed with bounds, so a crafted one can't make the node allocate without limit. Hints
+for a block that isn't on the best chain are reported instead of waited on. If a SwiftSync can't go on,
+the app wipes its partial chain state and syncs the ordinary way from genesis, setting the hints aside; if
+a save was interrupted mid-SwiftSync, it starts the SwiftSync again. Either way it says so on screen and in
+the diagnostics.
 
 What it saves is the UTXO database work for the coins spent before the end height, which is most of them.
 That work is what made an ordinary sync slow on a phone's storage, and its cache small.

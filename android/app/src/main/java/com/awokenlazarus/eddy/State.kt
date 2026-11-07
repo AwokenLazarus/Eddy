@@ -39,6 +39,8 @@ data class NodeState(
     val netLabel: String = "None",
     /** Plugged in and the battery is actually gaining charge (not just plugged in). */
     val filling: Boolean = false,
+    /** Shown when SwiftSync had to fall back or restart. */
+    val swiftNote: String = "",
 )
 
 fun pauseText(reason: String?): String = when (reason) {
@@ -57,6 +59,10 @@ class Prefs(ctx: Context) {
     var wantRunning: Boolean
         get() = p.getBoolean("want_running", false)
         set(v) = p.edit().putBoolean("want_running", v).commit().let { }
+    /** SwiftSync failed for this install: sync the ordinary way, don't fetch hints again. */
+    var swiftsyncDisabled: Boolean
+        get() = p.getBoolean("swiftsync_disabled", false)
+        set(v) = p.edit().putBoolean("swiftsync_disabled", v).commit().let { }
     /** The current data directory was started from genesis for a SwiftSync. */
     var swiftsyncStarted: Boolean
         get() = p.getBoolean("swiftsync_started", false)
