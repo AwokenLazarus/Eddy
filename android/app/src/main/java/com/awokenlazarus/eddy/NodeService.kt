@@ -418,9 +418,16 @@ class NodeService : Service() {
                 val dtH = (now - first.first) / 3_600_000.0
                 val bph = if (dtH > 0.03) (height - first.third) / dtH else 0.0
                 val pph = if (dtH > 0.15) (progress - first.second) / dtH else 0.0
-                val eta = if (pph > 0 && netActive == true) ((1 - progress) / pph * 3600).toLong() else null
+                // Knots' progress figure is weighted by transactions, the closest proxy for the work left;
+                // before 1% of them the rate swings too much to estimate from.
+                val eta = if (pph > 0 && netActive == true && progress >= 0.01) ((1 - progress) / pph * 3600).toLong() else null
 
-                if (now - lastDisk > 10 * 60_000L) { diskBytes = dirSize(dataDir); lastDisk = now }
+                // Everything Eddy stores counts against its 32 GB budget: the node's data, its logs and
+                // diagnostics, and the SwiftSync hints file.
+                if (now - lastDisk > 5 * 60_000L) {
+                    diskBytes = dirSize(dataDir) + (getExternalFilesDir(null)?.let { dirSize(it) } ?: 0L)
+                    lastDisk = now
+                }
                 val pid = pid()
                 val pr = pid?.let { probe.proc(it) }
                 if (pr != null) {
@@ -451,6 +458,7 @@ class NodeService : Service() {
                         dbcacheMb = plan.dbcacheMb, batteryPct = battery.pct, charging = battery.charging,
                         batteryTempC = battery.tempC, thermal = thermal, wifi = wifiOk, activeSyncSec = activeSec,
                         lagP95Ms = lagNow.second,
+                        netLabel = netLabel(), filling = battery.filling,
                         swiftTerminal = swift?.optInt("terminal_height") ?: 0,
                         swiftActive = swift?.optBoolean("active") ?: false,
                     )
@@ -489,12 +497,21 @@ class NodeService : Service() {
         return if (stopping) Exit.Stopped else Exit.Crashed
     }
 
-    private fun pauseReason(b: Probe.Battery, ibd: Boolean): String? = when {
+    /** First sync: paused because the battery fell below 10%, even on a charger; resumes at 15%. */
+    @Volatile private var lowBattery = false
+
+    private fun pauseReason(b: Probe.Battery, ibd: Boolean): String? {
+        lowBattery = if (lowBattery) b.pct in 0..14 else ibd && b.pct in 0..9
+        return pauseReasonFor(b, ibd)
+    }
+
+    private fun pauseReasonFor(b: Probe.Battery, ibd: Boolean): String? = when {
         // Wi-Fi only for the first sync; once synced, mobile data is fine too.
         ibd && !wifiOk -> "no_wifi"
         prefs.chargingOnly && !b.charging -> "not_charging"
         prefs.pauseHot && hot -> "hot"
         !b.charging && b.pct in 0..14 -> "low_battery"
+        lowBattery -> "low_battery"
         prefs.pauseInUse && ibd && probe.interactive() -> "in_use"
         else -> null
     }
@@ -573,6 +590,16 @@ class NodeService : Service() {
             j.put("rssi", w.rssi).put("link_mbps", w.linkSpeed).put("freq_mhz", w.frequency)
         }
         return j
+    }
+
+    private fun netLabel(): String {
+        val c = netCaps ?: return "None"
+        return when {
+            c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobile data"
+            else -> "Other"
+        }
     }
 
     private fun transports(c: NetworkCapabilities): String = buildList {
@@ -657,12 +684,14 @@ class NodeService : Service() {
             .build()
     }
 
+    private fun blockPct(s: NodeState) = if (s.headers > 0) s.height * 100.0 / s.headers else 0.0
+
     private fun updateNotification() {
         val s = state.value
         val title = when (s.phase) {
-            Phase.Syncing -> "Validating · %.2f%%".format(s.progress * 100)
+            Phase.Syncing -> "Validating · %.0f%% of blocks".format(blockPct(s))
             Phase.Synced -> "Synced · block %,d".format(s.height)
-            Phase.Paused -> "Paused · %.2f%%".format(s.progress * 100)
+            Phase.Paused -> "Paused · %.0f%% of blocks".format(blockPct(s))
             else -> s.phase.name
         }
         val text = when (s.phase) {

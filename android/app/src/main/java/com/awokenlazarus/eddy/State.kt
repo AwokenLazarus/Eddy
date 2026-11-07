@@ -35,6 +35,10 @@ data class NodeState(
     /** SwiftSync: the height where the coins it was given are proven, or 0 when not in use. */
     val swiftTerminal: Int = 0,
     val swiftActive: Boolean = false,
+    /** The network the node uses: "Wi-Fi", "Mobile data", "Ethernet" or "None". */
+    val netLabel: String = "None",
+    /** Plugged in and the battery is actually gaining charge (not just plugged in). */
+    val filling: Boolean = false,
 )
 
 fun pauseText(reason: String?): String = when (reason) {
@@ -42,7 +46,7 @@ fun pauseText(reason: String?): String = when (reason) {
     "not_charging" -> "Waiting for a charger"
     "hot" -> "Cooling down"
     "in_use" -> "Paused while you use the phone"
-    "low_battery" -> "Battery low"
+    "low_battery" -> "Battery low: waiting for it to charge"
     "stopped" -> "Stopped"
     null -> ""
     else -> reason

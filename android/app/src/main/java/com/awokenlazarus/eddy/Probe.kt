@@ -17,7 +17,8 @@ class Probe(private val ctx: Context) {
     private val bm = ctx.getSystemService(BatteryManager::class.java)
     private val am = ctx.getSystemService(ActivityManager::class.java)
 
-    data class Battery(val pct: Int, val charging: Boolean, val plugged: Int, val tempC: Double, val mv: Int, val currentUa: Int)
+    /** [charging] means plugged in; [filling] means the battery is actually gaining charge. */
+    data class Battery(val pct: Int, val charging: Boolean, val plugged: Int, val tempC: Double, val mv: Int, val currentUa: Int, val filling: Boolean = false)
 
     fun battery(): Battery {
         val i: Intent? = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -28,7 +29,9 @@ class Probe(private val ctx: Context) {
         val mv = i?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
         val cur = runCatching { bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) }.getOrDefault(0)
         val pct = if (level >= 0 && scale > 0) level * 100 / scale else -1
-        return Battery(pct, plugged != 0, plugged, temp, mv, cur)
+        val status = i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val filling = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+        return Battery(pct, plugged != 0, plugged, temp, mv, cur, filling)
     }
 
     fun thermalStatus(): Int = pm.currentThermalStatus

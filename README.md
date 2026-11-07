@@ -8,7 +8,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.3.1) runs the node; Lightning Fork isn't in the app yet. Nothing
+Early. The Android app (`android/`, version 0.3.2) runs the node; Lightning Fork isn't in the app yet. Nothing
 here holds real funds yet.
 
 Works on an Android 14 x86_64 emulator:
@@ -24,7 +24,15 @@ Works on an Android 14 x86_64 emulator:
 - Lightning Fork on mainnet against that Knots node: synced to the chain at the same tip, using about
   85 MB of RAM
 
-Not yet shown: either on a physical phone, and real channels on mainnet.
+On a physical phone (8-core Snapdragon, 11 GB RAM, Android 17), in progress:
+
+- The app runs the node from genesis on Wi-Fi at low priority. The phone stays responsive: the app's main
+  thread lags under 15 ms at the 95th percentile with the node using several cores.
+- A first sync with SwiftSync from genesis, with hints from file hosting and spent coins from both file
+  hosting and a peer running the fork. Its UTXO cache stays in the tens of MB where an ordinary sync uses
+  hundreds. Speed against an ordinary sync on the same phone is being measured from full logs.
+
+Not yet shown: a complete sync on a phone, and real channels on mainnet.
 
 ## The app
 
@@ -38,7 +46,8 @@ from the genesis block with `assumevalid=0`. It aims to leave the phone usable w
 - **Bounded memory.** The UTXO cache is a sixth of the phone's RAM, at most 2 GB, during the first sync and
   300 MB after it. The node is pruned to 4 GB of blocks.
 - **Pauses.** It pauses when Android reports severe heat or the battery reaches 42 °C, or the battery drops
-  below 15% off the charger. Optional settings pause it while unplugged or while the screen is on.
+  below 15% off the charger, or below 10% during the first sync even when plugged in (it resumes at
+  15%). Optional settings pause it while unplugged or while the screen is on.
 - **Diagnostics.** Every minute it records the node's progress, CPU, memory and I/O, the phone's heat,
   battery, memory, network and main-thread lag, where the node's block-connecting time goes (from
   `-debug=bench`), and every pause, restart and crash. The records sit in

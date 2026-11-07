@@ -143,8 +143,8 @@ private fun Pill(p: Phase) {
 private fun ProgressCard(s: NodeState) {
     Column(Modifier.fillMaxWidth().card(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         // The big number is blocks validated, which is what people expect. Knots' own progress figure
-        // counts transactions, which barely moves through the nearly empty early years, so it's
-        // shown underneath instead.
+        // counts transactions, which barely moves through the nearly empty early years; it is used
+        // only for the time-left estimate, and kept in the diagnostics.
         val blocks = if (s.headers > 0) s.height.toDouble() / s.headers else 0.0
         Text("CHAIN VALIDATED", style = label)
         Text(
@@ -155,11 +155,6 @@ private fun ProgressCard(s: NodeState) {
         Text(
             if (s.headers > 0) "Block %,d of %,d".format(s.height, s.headers) else "Waiting for the first headers",
             style = num.copy(color = C.ink2, fontSize = 15.sp),
-        )
-        Text(
-            (if (s.progress < 0.01) "%.3f%%" else "%.1f%%").format(s.progress * 100) +
-                " of all transactions (the later years hold most of them)",
-            style = small,
         )
         val line = buildList {
             if (s.tipTime > 0) add("Up to " + SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(s.tipTime * 1000)))
@@ -192,14 +187,15 @@ private fun Bar(f: Float) {
 @Composable
 private fun Stats(s: NodeState) {
     val tiles = listOf(
-        Triple("PEERS", if (s.netActive) "${s.peers}" else "–", if (s.wifi) "Wi-Fi" else "No Wi-Fi"),
+        Triple("PEERS", if (s.netActive) "${s.peers}" else "–", s.netLabel),
         Triple("DOWNLOADED", bytes(s.recvBytes), "this session"),
         Triple("DISK", bytes(s.diskBytes), "of 32 GB budget"),
-        Triple("CACHE", "%,d MB".format(s.cacheMb.toLong()), "of %,d MB".format(s.dbcacheMb)),
-        Triple("NODE CPU", "%d%%".format(s.nodeCpuPct.toInt()), "low priority"),
+        Triple("UTXO CACHE", "%,d MB".format(s.cacheMb.toLong()), "of %,d MB".format(s.dbcacheMb)),
+        Triple("NODE CPU", "%.1f cores".format(s.nodeCpuPct / 100), "low priority"),
         Triple("NODE RAM", bytes(s.nodeRssBytes), ""),
-        Triple("BATTERY", if (s.batteryPct >= 0) "${s.batteryPct}%" else "–", "%.1f °C%s".format(s.batteryTempC, if (s.charging) " · charging" else "")),
-        Triple("PHONE", thermal(s.thermal), if (s.lagP95Ms > 0) "lag ${s.lagP95Ms} ms" else ""),
+        Triple("BATTERY", if (s.batteryPct >= 0) "${s.batteryPct}%" else "–", "%.1f °C · %s".format(s.batteryTempC,
+            when { s.filling -> "charging"; s.charging -> "plugged in, not charging"; else -> "on battery" })),
+        Triple("PHONE", thermal(s.thermal), if (s.lagP95Ms > 0) "UI lag ${s.lagP95Ms} ms" else ""),
     )
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         tiles.chunked(2).forEach { row ->
@@ -255,6 +251,7 @@ private fun SettingsCard(s: Settings, change: (Settings) -> Unit) {
         Text("RULES", style = label)
         Toggle("Wi-Fi only for the first sync", "No mobile data until the chain is synced; after that, either.", true, enabled = false) {}
         Toggle("Only while charging", "Pause when the phone is unplugged.", s.chargingOnly) { change(s.copy(chargingOnly = it)) }
+        Toggle("Battery guard", "Pause below 15% on battery, and below 10% during the first sync even when plugged in.", true, enabled = false) {}
         Toggle("Pause when hot", "Pause if Android reports severe heat or the battery reaches 42 °C.", s.pauseHot) { change(s.copy(pauseHot = it)) }
         Toggle("Pause while I use the phone", "Sync only with the screen off.", s.pauseInUse) { change(s.copy(pauseInUse = it)) }
         Toggle("Detailed timing logs", "Per-block timings for diagnostics (takes effect at the next start).", s.benchLogs) { change(s.copy(benchLogs = it)) }
@@ -289,8 +286,9 @@ private fun DiagnosticsCard(path: String, onShare: () -> Unit) {
     }
 }
 
+// Android's thermal status levels (PowerManager.THERMAL_STATUS_*), in plain words.
 private fun thermal(t: Int) = when (t) {
-    0 -> "Cool"; 1 -> "Warm"; 2 -> "Warm+"; 3 -> "Hot"; 4 -> "Critical"; 5 -> "Emergency"; 6 -> "Shutdown"; else -> "–"
+    0 -> "Normal"; 1 -> "Warm"; 2 -> "Hot"; 3 -> "Very hot"; 4 -> "Critical"; 5 -> "Emergency"; 6 -> "Shutdown"; else -> "–"
 }
 
 private fun bytes(b: Long): String = when {
