@@ -84,6 +84,8 @@ class NodeService : Service() {
     private var loop: Job? = null
     @Volatile private var proc: java.lang.Process? = null
     @Volatile private var stopping = false
+    /** Bytes this app had received when the service started, so "downloaded" means this session. */
+    private val rxAtStart = TrafficStats.getUidRxBytes(android.os.Process.myUid())
 
     @Volatile private var wifiOk = false
     @Volatile private var netCaps: NetworkCapabilities? = null
@@ -401,11 +403,13 @@ class NodeService : Service() {
 
                 if (netActive == true && ibd) activeSec += (now - lastTick) / 1000
                 window.addLast(Triple(now, progress, height))
-                while (window.size > 2 && now - window.first.first > 30 * 60_000L) window.removeFirst()
+                // Rates over the last 10 minutes; no estimate until there are 10 minutes of steady data,
+                // so a restart or a pause doesn't produce nonsense like "108 days left".
+                while (window.size > 2 && now - window.first.first > 10 * 60_000L) window.removeFirst()
                 val first = window.first
                 val dtH = (now - first.first) / 3_600_000.0
-                val bph = if (dtH > 0.05) (height - first.third) / dtH else 0.0
-                val pph = if (dtH > 0.05) (progress - first.second) / dtH else 0.0
+                val bph = if (dtH > 0.03) (height - first.third) / dtH else 0.0
+                val pph = if (dtH > 0.15) (progress - first.second) / dtH else 0.0
                 val eta = if (pph > 0 && netActive == true) ((1 - progress) / pph * 3600).toLong() else null
 
                 if (now - lastDisk > 10 * 60_000L) { diskBytes = dirSize(dataDir); lastDisk = now }
@@ -434,7 +438,7 @@ class NodeService : Service() {
                         phase = phase, detail = pauseText(reason), height = height, headers = headers,
                         progress = progress, tipTime = info.optLong("time"), ibd = ibd,
                         netActive = netActive == true, pauseReason = reason, blocksPerHour = bph, etaSeconds = eta,
-                        diskBytes = diskBytes, recvBytes = TrafficStats.getUidRxBytes(applicationInfo.uid),
+                        diskBytes = diskBytes, recvBytes = TrafficStats.getUidRxBytes(applicationInfo.uid) - rxAtStart,
                         nodeRssBytes = (pr?.rssKb ?: 0) * 1024, nodeCpuPct = cpuPct, cacheMb = cache ?: it.cacheMb,
                         dbcacheMb = plan.dbcacheMb, batteryPct = battery.pct, charging = battery.charging,
                         batteryTempC = battery.tempC, thermal = thermal, wifi = wifiOk, activeSyncSec = activeSec,

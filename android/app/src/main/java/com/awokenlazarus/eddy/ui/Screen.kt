@@ -142,9 +142,9 @@ private fun Pill(p: Phase) {
 @Composable
 private fun ProgressCard(s: NodeState) {
     Column(Modifier.fillMaxWidth().card(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("CHAIN VALIDATED", style = label)
+        Text("CHAIN VALIDATED (BY TRANSACTIONS)", style = label)
         Text(
-            "%.2f%%".format(s.progress * 100),
+            if (s.progress < 0.01) "%.3f%%".format(s.progress * 100) else "%.2f%%".format(s.progress * 100),
             style = TextStyle(fontFamily = Mono, fontSize = 46.sp, fontWeight = FontWeight(700), color = C.volt),
         )
         Bar(s.progress.toFloat())
@@ -155,7 +155,7 @@ private fun ProgressCard(s: NodeState) {
         val line = buildList {
             if (s.tipTime > 0) add("Up to " + SimpleDateFormat("d MMM yyyy", Locale.US).format(Date(s.tipTime * 1000)))
             if (s.blocksPerHour > 0 && s.ibd) add("%,d blocks/h".format(s.blocksPerHour.toLong()))
-            s.etaSeconds?.let { if (s.ibd) add("about ${duration(it)} left") }
+            if (s.ibd && s.phase == Phase.Syncing) add(s.etaSeconds?.let { "about ${duration(it)} left" } ?: "estimating time left")
         }.joinToString(" · ")
         if (line.isNotEmpty()) Text(line, style = small)
         if (s.swiftActive && s.swiftTerminal > 0) {
