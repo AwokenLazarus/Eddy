@@ -274,7 +274,13 @@ class NodeService : Service() {
         val f = File(getExternalFilesDir(null), "swiftsync.hints")
         if (synced || !f.exists()) return null
         if (!prefs.swiftsyncStarted) {
-            diag.event("swiftsync_reset", "hints_bytes" to f.length())
+            // Start the records fresh too, so the SwiftSync run's milestones and timings stand alone;
+            // the earlier run's files move to diag/before-swiftsync-<time>/.
+            val archive = File(diag.root, "before-swiftsync-${Diagnostics.stamp()}").apply { mkdirs() }
+            diag.root.listFiles()?.filter { it != archive && !it.name.startsWith("before-swiftsync") }
+                ?.forEach { it.renameTo(File(archive, it.name)) }
+            File(diag.root, "node-logs").mkdirs()
+            diag.event("swiftsync_reset", "hints_bytes" to f.length(), "archive" to archive.name)
             for (d in listOf("blocks", "chainstate", "swiftsync", "indexes")) File(dataDir, d).deleteRecursively()
             prefs.swiftsyncStarted = true
         }
