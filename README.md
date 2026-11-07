@@ -10,7 +10,7 @@ come an Electrum server and Lightning Stream, for consuming and producing conten
 
 ## Status
 
-Early. The Android app (`android/`, version 0.4.3) runs the node; Lightning Fork isn't in the app yet.
+Early. The Android app (`android/`, version 0.5.0) runs the node; Lightning Fork isn't in the app yet.
 Nothing here holds real funds yet.
 
 On an Android 14 x86_64 emulator:
@@ -94,13 +94,20 @@ Where the data comes from, all of it untrusted:
   spends nothing). The same undo data also comes in packs, listed in `v1/<end block hash>/packs.json`:
   `v1/<end block hash>/pack/<first>-<last>.gz` holds every block in that height range that spends
   something, about 16 MB each before gzip. Eddy downloads the hints on its first start over Wi-Fi and
-  checks the SHA-256. It then streams packs twelve at a time (one connection is latency-bound; twelve
-  fill a home link), keeping up to 768 MB unzipped ahead of the tip. It checks each against its listed
-  SHA-256 and size and hands it to the node (`loadswiftsyncundopack`), which reads each block's entry
-  from the file as the block connects. One request per block had capped a phone at a few dozen blocks
-  a second. Single files fill any gaps near
+  checks the SHA-256. It then streams undo packs four at a time, keeping up to 768 MB unzipped ahead
+  of the tip. It checks each against its listed SHA-256 and size and hands it to the node
+  (`loadswiftsyncundopack`), which reads each block's entry from the file as the block connects. One
+  request per block had capped a phone at a few dozen blocks a second. Single files fill any gaps near
   the tip (`getswiftsyncwants`, `submitswiftsyncundo`); the node never asks for a block that spends
   nothing, so a 404 there means the file isn't up yet, and Eddy tries again two minutes later.
+- **Blocks, from file hosting and peers.** Block packs, listed in `v1/<end block hash>/blocks.json`
+  (`v1/<end block hash>/block/<first>-<last>.gz`, about 32 MB each before gzip), hold every block up to
+  the end height. Eddy streams them twelve at a time (one connection to a phone behind a VPN was
+  latency-bound at about 3.6 MB/s; several reached 60 MB/s, where P2P peers gave at most about 12),
+  keeping up to 1.5 GB of blocks stored ahead of the tip, and hands each to the node with
+  `loadblockpack`. The node takes only blocks matching headers on its best header chain, skips mutated
+  copies without judging the header (as it does for a peer's), and validates every block when it
+  connects. Peers fill whatever the packs don't bring.
 - **Peers running the fork.** `getswundo`/`swundo` and the batched `getswundos`/`swundos` messages, sent to
   manually added peers.
 

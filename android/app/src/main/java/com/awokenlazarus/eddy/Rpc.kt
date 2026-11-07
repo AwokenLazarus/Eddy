@@ -13,7 +13,9 @@ class RpcError(val code: Int, message: String) : Exception(message)
 /** JSON-RPC to the local node, authenticated with the cookie file it writes at startup. */
 class Rpc(private val dataDir: File, private val port: Int) {
 
-    fun call(method: String, vararg params: Any?): Any? {
+    fun call(method: String, vararg params: Any?): Any? = callTimeout(120_000, method, *params)
+
+    fun callTimeout(timeoutMs: Int, method: String, vararg params: Any?): Any? {
         val cookie = File(dataDir, ".cookie")
         if (!cookie.exists()) throw IOException("node has not written its cookie yet")
         val auth = "Basic " + Base64.encodeToString(cookie.readText().trim().toByteArray(), Base64.NO_WRAP)
@@ -22,7 +24,7 @@ class Rpc(private val dataDir: File, private val port: Int) {
             .put("params", JSONArray(params.toList()))
         val c = URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection
         c.connectTimeout = 3_000
-        c.readTimeout = 120_000
+        c.readTimeout = timeoutMs
         c.requestMethod = "POST"
         c.doOutput = true
         c.setRequestProperty("Authorization", auth)

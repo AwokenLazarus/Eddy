@@ -27,6 +27,10 @@ import java.util.concurrent.atomic.AtomicLong
  *    of every block in that height range that spends something. Packs are streamed ahead of the
  *    tip, unzipped next to the node's data and handed over with loadswiftsyncundopack; the node
  *    reads each block's entry from the file when the block connects. Single files only fill gaps.
+ *  - v1/<hash>/blocks.json lists block packs: v1/<hash>/block/<first>-<last>.gz, every block in that
+ *    height range. They are streamed ahead of the tip and handed over with loadblockpack, which
+ *    stores the blocks as if a peer had sent them; each is fully validated when it connects. Peers
+ *    still fill whatever the packs don't bring.
  *
  * The node never asks for a block it knows spends nothing, so a 404 here means the file isn't up
  * (yet): it is asked for again later, and peers can supply it meanwhile.
@@ -38,7 +42,10 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         private const val RETRY_404_MS = 120_000L
         /** Unzipped pack data kept on disk ahead of the tip. */
         private const val PACK_AHEAD_BYTES = 768L shl 20
-        private const val PACK_PARALLEL = 12
+        private const val PACK_PARALLEL = 4
+        /** Block packs: blocks stored ahead of the tip (they sit in the node's own block files until connected). */
+        private const val BLOCK_AHEAD_BYTES = 1536L shl 20
+        private const val BLOCK_PARALLEL = 12
         /** With packs, single files are fetched only this close to the tip (gaps, or a pack still downloading). */
         private const val SINGLES_NEAR_TIP = 16
         /** Blocks a pack stays on disk after the tip passes it. */
@@ -52,6 +59,9 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
     val packs = AtomicLong()
     val packBytes = AtomicLong()
     val packErrors = AtomicLong()
+    val blockPacks = AtomicLong()
+    val blockPackBytes = AtomicLong()
+    val blockPackErrors = AtomicLong()
 
     private class Pack(val first: Int, val last: Int, val bytes: Long, val gzBytes: Long, val sha256: String) {
         val name get() = "$first-$last"
@@ -111,6 +121,9 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         var packList: List<Pack>? = null
         var packListTried = 0L
         var packJob: kotlinx.coroutines.Job? = null
+        var blockList: List<Pack>? = null
+        var blockListTried = 0L
+        var blockJob: kotlinx.coroutines.Job? = null
         while (isActive && alive()) {
             val info = runCatching { rpc.obj("getswiftsyncinfo") }.getOrNull()
             if (info == null) { delay(2_000); continue }
@@ -123,6 +136,14 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
                 if (packList != null) {
                     diag.event("swiftsync_packs", "packs" to packList!!.size)
                     packJob = runPacks(this, rpc, terminal, packList!!, packDir, alive, allowed)
+                }
+            }
+            if (blockList == null && System.currentTimeMillis() - blockListTried > 600_000) {
+                blockListTried = System.currentTimeMillis()
+                blockList = runCatching { packIndex(terminal, "blocks.json") }.getOrNull()
+                if (blockList != null) {
+                    diag.event("swiftsync_block_packs", "packs" to blockList!!.size)
+                    blockJob = runBlockPacks(this, rpc, terminal, blockList!!, File(packDir.parentFile, "blockpacks"), alive, allowed)
                 }
             }
             val tip = if (packList != null) runCatching { (rpc.call("getblockcount") as Number).toInt() }.getOrNull() else null
@@ -160,17 +181,21 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
             delay(if (started == 0) 1_000 else 200)
         }
         packJob?.cancel()
+        blockJob?.cancel()
         diag.event("swiftsync_fetcher_stopped", "files" to files.get(), "bytes" to bytes.get(), "missing" to missing.get(),
-            "errors" to errors.get(), "packs" to packs.get(), "pack_bytes" to packBytes.get(), "pack_errors" to packErrors.get())
+            "errors" to errors.get(), "packs" to packs.get(), "pack_bytes" to packBytes.get(), "pack_errors" to packErrors.get(),
+            "block_packs" to blockPacks.get(), "block_pack_bytes" to blockPackBytes.get(), "block_pack_errors" to blockPackErrors.get())
     }
 
     fun stats(): JSONObject = JSONObject().put("files", files.get()).put("bytes", bytes.get())
         .put("missing", missing.get()).put("errors", errors.get())
         .put("packs", packs.get()).put("pack_bytes", packBytes.get()).put("pack_errors", packErrors.get())
+        .put("block_packs", blockPacks.get()).put("block_pack_bytes", blockPackBytes.get()).put("block_pack_errors", blockPackErrors.get())
 
     /** The pack list for [terminal], or null when file hosting has none (then single files only). */
-    private fun packIndex(terminal: String): List<Pack>? {
-        val body = get(BASE + "v1/$terminal/packs.json") ?: return null
+    private fun packIndex(terminal: String, file: String = "packs.json"): List<Pack>? {
+        // The query string keeps a 404 cached at the edge before the list existed from hiding it.
+        val body = get(BASE + "v1/$terminal/$file?t=${System.currentTimeMillis() / 600_000}") ?: return null
         val j = JSONObject(String(body))
         if (j.optInt("version") != 1) return null
         val a = j.getJSONArray("packs")
@@ -251,12 +276,64 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         false
     }
 
+    /**
+     * Keep up to [BLOCK_AHEAD_BYTES] of blocks from block packs stored ahead of the tip. Each pack is
+     * streamed, checked, handed to the node (loadblockpack) once headers reach its last block, and
+     * deleted: the node keeps the blocks in its own files until they connect.
+     */
+    private fun runBlockPacks(scope: CoroutineScope, rpc: Rpc, terminal: String, list: List<Pack>, dir: File,
+                              alive: () -> Boolean, allowed: () -> Boolean) = scope.launch(Dispatchers.IO) {
+        dir.mkdirs()
+        dir.listFiles()?.forEach { it.delete() }
+        val done = ConcurrentHashMap.newKeySet<String>()
+        val busy = ConcurrentHashMap.newKeySet<String>()
+        val failedAt = ConcurrentHashMap<String, Long>()
+        while (isActive && alive()) {
+            val chain = runCatching { rpc.obj("getblockchaininfo") }.getOrNull()
+            if (chain == null || !allowed()) { delay(2_000); continue }
+            val tip = chain.optInt("blocks")
+            val headers = chain.optInt("headers")
+            var ahead = list.filter { it.last > tip && (it.name in done || it.name in busy) }.sumOf { it.bytes }
+            for (p in list) {
+                if (p.last <= tip || p.name in done || p.name in busy) continue
+                if (p.last > headers) break
+                val next = p.first <= tip + 1
+                if (!next && ahead + p.bytes > BLOCK_AHEAD_BYTES && ahead > 0) break
+                if ((failedAt[p.name] ?: 0L) > System.currentTimeMillis() - 30_000) continue
+                if (busy.size >= BLOCK_PARALLEL) break
+                busy.add(p.name)
+                ahead += p.bytes
+                launch {
+                    try {
+                        val f = download(terminal, p, dir, "block")
+                        blockPacks.incrementAndGet()
+                        blockPackBytes.addAndGet(p.gzBytes)
+                        try {
+                            rpc.callTimeout(300_000, "loadblockpack", f.absolutePath)
+                        } catch (e: java.net.SocketTimeoutException) {
+                            // The node stores a pack's blocks before it starts connecting them, so a slow
+                            // reply means it is busy connecting: the blocks are in.
+                        }
+                        done.add(p.name)
+                    } catch (e: Exception) {
+                        failedAt[p.name] = System.currentTimeMillis()
+                        if (blockPackErrors.incrementAndGet() % 20 == 1L) diag.event("swiftsync_block_pack_error", "pack" to p.name, "error" to e.toString().take(200))
+                    } finally {
+                        File(dir, p.name).delete()
+                        busy.remove(p.name)
+                    }
+                }
+            }
+            delay(1_000)
+        }
+    }
+
     /** Stream a pack's .gz, checking its SHA-256, and unzip it to [dir]/<first>-<last>. */
-    private fun download(terminal: String, p: Pack, dir: File): File {
+    private fun download(terminal: String, p: Pack, dir: File, sub: String = "pack"): File {
         val dest = File(dir, p.name)
         val part = File(dir, p.name + ".part")
         val md = MessageDigest.getInstance("SHA-256")
-        val c = URL(BASE + "v1/$terminal/pack/${p.name}.gz").openConnection() as HttpURLConnection
+        val c = URL(BASE + "v1/$terminal/$sub/${p.name}.gz").openConnection() as HttpURLConnection
         c.connectTimeout = 15_000
         c.readTimeout = 60_000
         try {
