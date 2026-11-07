@@ -572,15 +572,21 @@ class NodeService : Service() {
         }
         if (target == nodeCores && pid == coresPid) return
         if (coresFailedAt >= 0 && now - coresFailedAt < 300_000L) return
+        // Right after a start the pid file may still name the previous run's process.
+        val cmd = runCatching { File("/proc/$pid/cmdline").readText() }.getOrDefault("")
+        if (!cmd.contains("bitcoind")) return
         val mask = coreOrder.take(target).fold(0L) { m, c -> m or (1L shl c) }
+        var out = ""
         val ok = runCatching {
             val p = ProcessBuilder("/system/bin/taskset", "-a", "-p", java.lang.Long.toHexString(mask), pid.toString())
                 .redirectErrorStream(true).start()
+            out = p.inputStream.bufferedReader().readText().trim()
             p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) && p.exitValue() == 0
-        }.getOrDefault(false)
+        }.onFailure { out = it.toString() }.getOrDefault(false)
         if (target != nodeCores || !ok) {
             diag.event("node_cores", "from" to nodeCores, "to" to target, "ok" to ok, "thermal" to thermal,
-                "headroom" to if (headroom.isNaN()) null else headroom.toDouble(), "battery_c" to tempC)
+                "headroom" to if (headroom.isNaN()) null else headroom.toDouble(), "battery_c" to tempC,
+                "output" to if (ok) null else out.take(200))
         }
         coresFailedAt = if (ok) -1L else now
         if (ok) {

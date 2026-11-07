@@ -41,6 +41,8 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         private const val PACK_PARALLEL = 12
         /** With packs, single files are fetched only this close to the tip (gaps, or a pack still downloading). */
         private const val SINGLES_NEAR_TIP = 16
+        /** Blocks a pack stays on disk after the tip passes it. */
+        private const val KEEP_BEHIND = 2_000
     }
 
     val files = AtomicLong()
@@ -200,7 +202,8 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
             // Drop packs the tip has passed; (re)load those on disk the node doesn't know yet (after a restart).
             for (f in dir.listFiles().orEmpty()) {
                 val p = byName[f.name] ?: continue
-                if (p.last <= tip) { f.delete(); loaded.remove(p.name); continue }
+                // Kept a while past the tip: an unclean stop can roll the tip back by a few thousand blocks.
+                if (p.last + KEEP_BEHIND <= tip) { f.delete(); loaded.remove(p.name); continue }
                 if (p.name !in loaded && headers >= p.last && load(rpc, f)) loaded.add(p.name)
             }
             if (!allowed()) { delay(2_000); continue }
@@ -208,7 +211,9 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
             for (p in list) {
                 if (p.last <= tip || p.name in loaded || p.name in busy) continue
                 if (File(dir, p.name).exists()) continue // waiting for headers
-                if (ahead + p.bytes > PACK_AHEAD_BYTES && ahead > 0) break
+                // The pack the tip needs next always comes, whatever is already held further ahead.
+                val next = p.first <= tip + 1
+                if (!next && ahead + p.bytes > PACK_AHEAD_BYTES && ahead > 0) break
                 if ((failedAt[p.name] ?: 0L) > System.currentTimeMillis() - 30_000) continue
                 if (busy.size >= PACK_PARALLEL) break
                 busy.add(p.name)
