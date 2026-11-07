@@ -46,7 +46,7 @@ from the genesis block with `assumevalid=0`. It aims to leave the phone usable w
   and gzipped, and can be shared as one zip from the app.
 
 - **SwiftSync.** Eddy 0.2 runs a fork of Knots that adds SwiftSync
-  ([AwokenLazarus/knots](https://github.com/AwokenLazarus/knots), branch `eddy/swiftsync`). With a hints file
+  ([AwokenLazarus/knots](https://github.com/AwokenLazarus/knots), branch `eddy/swiftsync-29.5`). With a hints file
   in its files folder, the first sync skips the UTXO database for coins spent before the hints' end height,
   which is most of them. It still checks every block and signature, using the spent coins a peer serves, and
   a running total proves at the end height that those coins were real. A bad hints file or bad served data
