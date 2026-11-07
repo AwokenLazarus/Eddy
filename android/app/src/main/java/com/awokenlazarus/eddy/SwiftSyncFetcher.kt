@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicLong
 class SwiftSyncFetcher(private val diag: Diagnostics) {
     companion object {
         const val BASE = "https://swiftsync.lightning-stream.com/"
-        private const val PARALLEL = 8
+        private const val PARALLEL = 48
         private const val RETRY_404_MS = 120_000L
     }
 
