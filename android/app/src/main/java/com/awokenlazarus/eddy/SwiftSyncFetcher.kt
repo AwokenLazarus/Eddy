@@ -1,6 +1,9 @@
 package com.awokenlazarus.eddy
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -10,6 +13,7 @@ import kotlinx.coroutines.sync.withPermit
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -45,7 +49,16 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         private const val PACK_PARALLEL = 4
         /** Block packs: blocks stored ahead of the tip (they sit in the node's own block files until connected). */
         private const val BLOCK_AHEAD_BYTES = 1536L shl 20
-        private const val BLOCK_PARALLEL = 12
+        /**
+         * Block packs downloading at once, each over [BLOCK_RANGES] byte-range streams, in chain order.
+         * On a congested home link (about 5 MB/s measured) twelve whole-pack downloads split the link
+         * evenly, so the pack the node needed next arrived last and the tip stood still for 60-95 s
+         * between packs. Three packs of four streams keep twelve streams but finish the next pack first.
+         */
+        private const val BLOCK_SLOTS = 3
+        private const val BLOCK_RANGES = 4
+        /** A timing event every this many block packs. */
+        private const val TIMING_EVERY = 25
         /** With packs, single files are fetched only this close to the tip (gaps, or a pack still downloading). */
         private const val SINGLES_NEAR_TIP = 16
         /** Blocks a pack stays on disk after the tip passes it. */
@@ -62,6 +75,10 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
     val blockPacks = AtomicLong()
     val blockPackBytes = AtomicLong()
     val blockPackErrors = AtomicLong()
+    /** Milliseconds spent downloading block packs (per pack, summed), loading them, and with the tip waiting on one. */
+    val blockPackDlMs = AtomicLong()
+    val blockPackLoadMs = AtomicLong()
+    val blockPackWaitMs = AtomicLong()
 
     private class Pack(val first: Int, val last: Int, val bytes: Long, val gzBytes: Long, val sha256: String) {
         val name get() = "$first-$last"
@@ -184,13 +201,17 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         blockJob?.cancel()
         diag.event("swiftsync_fetcher_stopped", "files" to files.get(), "bytes" to bytes.get(), "missing" to missing.get(),
             "errors" to errors.get(), "packs" to packs.get(), "pack_bytes" to packBytes.get(), "pack_errors" to packErrors.get(),
-            "block_packs" to blockPacks.get(), "block_pack_bytes" to blockPackBytes.get(), "block_pack_errors" to blockPackErrors.get())
+            "block_packs" to blockPacks.get(), "block_pack_bytes" to blockPackBytes.get(), "block_pack_errors" to blockPackErrors.get(),
+            "block_pack_dl_s" to blockPackDlMs.get() / 1000, "block_pack_load_s" to blockPackLoadMs.get() / 1000,
+            "block_pack_wait_s" to blockPackWaitMs.get() / 1000)
     }
 
     fun stats(): JSONObject = JSONObject().put("files", files.get()).put("bytes", bytes.get())
         .put("missing", missing.get()).put("errors", errors.get())
         .put("packs", packs.get()).put("pack_bytes", packBytes.get()).put("pack_errors", packErrors.get())
         .put("block_packs", blockPacks.get()).put("block_pack_bytes", blockPackBytes.get()).put("block_pack_errors", blockPackErrors.get())
+        .put("block_pack_dl_s", blockPackDlMs.get() / 1000).put("block_pack_load_s", blockPackLoadMs.get() / 1000)
+        .put("block_pack_wait_s", blockPackWaitMs.get() / 1000)
 
     /** The pack list for [terminal], or null when file hosting has none (then single files only). */
     private fun packIndex(terminal: String, file: String = "packs.json"): List<Pack>? {
@@ -288,11 +309,18 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
         val done = ConcurrentHashMap.newKeySet<String>()
         val busy = ConcurrentHashMap.newKeySet<String>()
         val failedAt = ConcurrentHashMap<String, Long>()
+        var lastTick = System.currentTimeMillis()
         while (isActive && alive()) {
             val chain = runCatching { rpc.obj("getblockchaininfo") }.getOrNull()
-            if (chain == null || !allowed()) { delay(2_000); continue }
+            val tickMs = System.currentTimeMillis()
+            if (chain == null || !allowed()) { lastTick = tickMs; delay(2_000); continue }
             val tip = chain.optInt("blocks")
             val headers = chain.optInt("headers")
+            // Time the tip sat at the start of a pack that hadn't been loaded yet (peers may still have
+            // supplied some of those blocks; this is the time the packs alone would have stalled).
+            val head = list.firstOrNull { it.last > tip }
+            if (head != null && head.name !in done && head.last <= headers) blockPackWaitMs.addAndGet(tickMs - lastTick)
+            lastTick = tickMs
             var ahead = list.filter { it.last > tip && (it.name in done || it.name in busy) }.sumOf { it.bytes }
             for (p in list) {
                 if (p.last <= tip || p.name in done || p.name in busy) continue
@@ -300,21 +328,30 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
                 val next = p.first <= tip + 1
                 if (!next && ahead + p.bytes > BLOCK_AHEAD_BYTES && ahead > 0) break
                 if ((failedAt[p.name] ?: 0L) > System.currentTimeMillis() - 30_000) continue
-                if (busy.size >= BLOCK_PARALLEL) break
+                if (busy.size >= BLOCK_SLOTS) break
                 busy.add(p.name)
                 ahead += p.bytes
                 launch {
                     try {
-                        val f = download(terminal, p, dir, "block")
-                        blockPacks.incrementAndGet()
+                        val t0 = System.currentTimeMillis()
+                        val f = downloadRanged(terminal, p, dir, "block", BLOCK_RANGES)
+                        val t1 = System.currentTimeMillis()
+                        val n = blockPacks.incrementAndGet()
                         blockPackBytes.addAndGet(p.gzBytes)
+                        blockPackDlMs.addAndGet(t1 - t0)
                         try {
                             rpc.callTimeout(300_000, "loadblockpack", f.absolutePath)
                         } catch (e: java.net.SocketTimeoutException) {
                             // The node stores a pack's blocks before it starts connecting them, so a slow
                             // reply means it is busy connecting: the blocks are in.
                         }
+                        val t2 = System.currentTimeMillis()
+                        blockPackLoadMs.addAndGet(t2 - t1)
                         done.add(p.name)
+                        if (n % TIMING_EVERY == 1L) diag.event("swiftsync_block_pack_timing", "pack" to p.name,
+                            "gz_mb" to p.gzBytes / 1_000_000, "dl_s" to (t1 - t0) / 1000.0,
+                            "mb_per_s" to if (t1 > t0) p.gzBytes / 1000.0 / (t1 - t0) else 0.0, "load_s" to (t2 - t1) / 1000.0,
+                            "tip" to tip, "wait_s_total" to blockPackWaitMs.get() / 1000)
                     } catch (e: Exception) {
                         failedAt[p.name] = System.currentTimeMillis()
                         if (blockPackErrors.incrementAndGet() % 20 == 1L) diag.event("swiftsync_block_pack_error", "pack" to p.name, "error" to e.toString().take(200))
@@ -325,6 +362,70 @@ class SwiftSyncFetcher(private val diag: Diagnostics) {
                 }
             }
             delay(1_000)
+        }
+    }
+
+    /**
+     * Download a pack's .gz over [parts] byte-range requests at once, check its SHA-256, and unzip it to
+     * [dir]/<first>-<last>. Falls back to one stream ([download]) when file hosting ignores ranges.
+     */
+    private suspend fun downloadRanged(terminal: String, p: Pack, dir: File, sub: String, parts: Int): File {
+        if (parts <= 1 || p.gzBytes < (4L shl 20)) return download(terminal, p, dir, sub)
+        val url = BASE + "v1/$terminal/$sub/${p.name}.gz"
+        val gz = File(dir, p.name + ".gz.part")
+        val part = File(dir, p.name + ".part")
+        val dest = File(dir, p.name)
+        try {
+            RandomAccessFile(gz, "rw").use { it.setLength(p.gzBytes) }
+            val chunk = (p.gzBytes + parts - 1) / parts
+            val ranged = coroutineScope {
+                (0 until parts).map { i ->
+                    async(Dispatchers.IO) { fetchRange(url, gz, i * chunk, minOf(p.gzBytes, (i + 1) * chunk) - 1) }
+                }.awaitAll()
+            }
+            if (ranged.any { !it }) { gz.delete(); return download(terminal, p, dir, sub) }
+            val md = MessageDigest.getInstance("SHA-256")
+            java.util.zip.GZIPInputStream(java.security.DigestInputStream(gz.inputStream().buffered(1 shl 16), md), 1 shl 16).use { i ->
+                part.outputStream().buffered(1 shl 16).use { o -> i.copyTo(o, 1 shl 16) }
+            }
+            val got = md.digest().joinToString("") { "%02x".format(it) }
+            if (got != p.sha256 || part.length() != p.bytes) throw IOException("pack ${p.name} doesn't match its listing")
+            if (!part.renameTo(dest)) throw IOException("cannot rename ${part.name}")
+            return dest
+        } catch (e: Exception) {
+            part.delete()
+            throw e
+        } finally {
+            gz.delete()
+        }
+    }
+
+    /** Fetch bytes [from]..[to] of [url] into [file] at the same offset; false if the server ignored the range. */
+    private fun fetchRange(url: String, file: File, from: Long, to: Long): Boolean {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 15_000
+        c.readTimeout = 60_000
+        c.setRequestProperty("Range", "bytes=$from-$to")
+        try {
+            if (c.responseCode == 200) return false
+            if (c.responseCode != 206) throw IOException("HTTP ${c.responseCode}")
+            var pos = from
+            RandomAccessFile(file, "rw").use { raf ->
+                raf.seek(from)
+                val buf = ByteArray(1 shl 16)
+                c.inputStream.use { i ->
+                    while (true) {
+                        val n = i.read(buf)
+                        if (n < 0) break
+                        raf.write(buf, 0, n)
+                        pos += n
+                    }
+                }
+            }
+            if (pos != to + 1) throw IOException("range $from-$to ended at $pos")
+            return true
+        } finally {
+            c.disconnect()
         }
     }
 
