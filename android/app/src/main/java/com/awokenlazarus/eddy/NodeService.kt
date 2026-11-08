@@ -504,7 +504,7 @@ class NodeService : Service() {
                         netLabel = netLabel(), filling = battery.filling,
                         swiftTerminal = swift?.optInt("terminal_height") ?: 0,
                         swiftActive = swift?.optBoolean("active") ?: false,
-                        coreLimit = nodeCores, coresTotal = coreOrder.size,
+                        coreLimit = nodeCores, coresTotal = coreOrder.size, dutyLimit = nodeDuty,
                     )
                 }
 
@@ -552,23 +552,48 @@ class NodeService : Service() {
     private var coresPid = -1
     private var coresFailedAt = -1L
 
+    /** Share of the time the node's SwiftSync script workers may work (setswiftsyncduty), stepped by heat. */
+    @Volatile private var nodeDuty = 100
+    private var dutyPid = -1
+    private val dutyLevels = intArrayOf(20, 30, 40, 55, 75, 100)
+
     /**
-     * Fewer cores for the node as the phone nears its throttling point (headroom 1.0 is where Android
-     * throttles hard), more as it cools: two at a time down, one at a time up, with time between
-     * steps to see the effect. Done with the node's CPU affinity, so it keeps its peers and its place.
+     * Heat control, as the phone nears its throttling point (headroom 1.0 is where Android throttles
+     * hard), with time between steps to see the effect. First the node's SwiftSync script workers
+     * get a lower duty (setswiftsyncduty) on all cores: a cluster's cores share one clock, set by its
+     * busiest core, so all cores at part load run at a lower clock and spend less energy per
+     * signature than fewer cores at full load (measured: one busy core held the cluster at 3.2 GHz).
+     * Only at the lowest duty does the node get fewer cores (its CPU affinity, two at a time). Cooling
+     * undoes it in reverse: cores back first, then duty, one step at a time.
      */
     private fun governCores(pid: Int?, thermal: Int, headroom: Float, tempC: Double) {
         val all = coreOrder.size
         if (all == 0 || pid == null) return
         if (nodeCores == 0) nodeCores = all
+        if (pid != dutyPid) {
+            nodeDuty = 100 // a new node process starts at full duty
+            dutyPid = pid
+        }
         val now = SystemClock.elapsedRealtime()
         val guard = prefs.pauseHot
         val warm = guard && (thermal >= PowerManager.THERMAL_STATUS_SEVERE || (!headroom.isNaN() && headroom >= 0.95f) || tempC >= 41.0)
         val cool = !guard || (thermal <= PowerManager.THERMAL_STATUS_LIGHT && (headroom.isNaN() || headroom < 0.80f) && tempC < 39.0)
-        val target = when {
-            warm && nodeCores > 1 && now - coresChangedAt >= 30_000L -> maxOf(1, nodeCores - 2)
-            cool && nodeCores < all && now - coresChangedAt >= 120_000L -> nodeCores + 1
-            else -> nodeCores
+        val level = dutyLevels.indexOfFirst { it >= nodeDuty }.coerceAtLeast(0)
+        var duty = nodeDuty
+        var target = nodeCores
+        if (warm && now - coresChangedAt >= 30_000L) {
+            if (level > 0) duty = dutyLevels[level - 1] else if (nodeCores > 1) target = maxOf(1, nodeCores - 2)
+        } else if (cool && now - coresChangedAt >= 120_000L) {
+            if (nodeCores < all) target = nodeCores + 1 else if (level < dutyLevels.size - 1) duty = dutyLevels[level + 1]
+        }
+        if (duty != nodeDuty) {
+            val ok = runCatching { rpc.call("setswiftsyncduty", duty) }.isSuccess
+            diag.event("node_duty", "from" to nodeDuty, "to" to duty, "ok" to ok, "thermal" to thermal,
+                "headroom" to if (headroom.isNaN()) null else headroom.toDouble(), "battery_c" to tempC)
+            // Without SwiftSync (or an older node) there is no duty to set: go straight to cores next time.
+            nodeDuty = if (ok) duty else dutyLevels.first()
+            coresChangedAt = now
+            return
         }
         if (target == nodeCores && pid == coresPid) return
         if (coresFailedAt >= 0 && now - coresFailedAt < 300_000L) return
@@ -644,7 +669,7 @@ class NodeService : Service() {
         j.put("battery", JSONObject().put("pct", b.pct).put("charging", b.charging).put("plugged", b.plugged)
             .put("temp_c", b.tempC).put("mv", b.mv).put("current_ua", b.currentUa))
         j.put("thermal", JSONObject().put("status", thermal).put("headroom", if (headroom.isNaN()) JSONObject.NULL else headroom.toDouble()).put("hot", hot)
-            .put("node_cores", nodeCores))
+            .put("node_cores", nodeCores).put("node_duty", nodeDuty))
         j.put("cpu_mhz", probe.cpuFreqsMhz()).put("memory", probe.memory()).put("power", probe.power()).put("pressure", probe.pressure())
         j.put("lag_ms", JSONObject().put("p50", lag.first).put("p95", lag.second).put("max", lag.third))
         j.put("network", network())

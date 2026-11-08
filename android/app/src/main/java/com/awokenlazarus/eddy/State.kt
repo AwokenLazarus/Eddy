@@ -24,6 +24,8 @@ data class NodeState(
     val nodeCpuPct: Double = 0.0,
     /** Cores the node may use (fewer while the phone cools) and the phone's total. */
     val coreLimit: Int = 0,
+    /** SwiftSync script workers' duty (percent), lowered before cores when the phone warms. */
+    val dutyLimit: Int = 100,
     val coresTotal: Int = 0,
     val cacheMb: Double = 0.0,
     val dbcacheMb: Int = 0,

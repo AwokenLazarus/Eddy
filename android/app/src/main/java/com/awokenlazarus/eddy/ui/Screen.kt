@@ -193,7 +193,7 @@ private fun Stats(s: NodeState) {
         Triple("DISK", bytes(s.diskBytes), "of 32 GB budget"),
         Triple("UTXO CACHE", "%,d MB".format(s.cacheMb.toLong()), "of %,d MB".format(s.dbcacheMb)),
         Triple("NODE CPU", "%.1f cores".format(s.nodeCpuPct / 100),
-            if (s.coreLimit in 1 until s.coresTotal) "cooling: ${s.coreLimit} of ${s.coresTotal} cores" else "low priority"),
+            when { s.coreLimit in 1 until s.coresTotal -> "cooling: ${s.coreLimit} of ${s.coresTotal} cores"; s.dutyLimit < 100 -> "cooling: ${s.dutyLimit}% duty"; else -> "low priority" }),
         Triple("NODE RAM", bytes(s.nodeRssBytes), ""),
         Triple("BATTERY", if (s.batteryPct >= 0) "${s.batteryPct}%" else "–", "%.1f °C · %s".format(s.batteryTempC,
             when { s.filling -> "charging"; s.charging -> "plugged in, not charging"; else -> "on battery" })),
